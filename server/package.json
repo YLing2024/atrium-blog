@@ -1,0 +1,17 @@
+{
+  "name": "blog-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "博客后端 API 服务（Express + SQLite）",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2",
+    "better-sqlite3": "^11",
+    "express": "^4",
+    "jsonwebtoken": "^9"
+  }
+}
