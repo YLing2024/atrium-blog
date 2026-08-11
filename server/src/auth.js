@@ -52,8 +52,16 @@ async function verifyAdminSession(token) {
   return false
 }
 
-// 鉴权中间件：优先校验 blog JWT（现有逻辑）；失败后回退校验 Admin 会话
+// 鉴权中间件：
+//   1. 第一优先：Nginx 探针注入的 X-Auth-User header（auth_request 已校验认证中心 token，内网信任）
+//   2. 回退：双通道校验 blog JWT → Admin 会话（Redis admin:session）
 async function requireAuth(req, res, next) {
+  const authUser = req.headers['x-auth-user']
+  if (authUser) {
+    req.user = { username: authUser, via: 'nginx-auth-request' }
+    return next()
+  }
+
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
   if (!token) {
