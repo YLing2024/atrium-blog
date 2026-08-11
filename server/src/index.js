@@ -21,9 +21,9 @@ app.use((req, _res, next) => {
   next()
 })
 
-// 挂载路由：统一挂在 /api 下
-app.use('/api', authRouter)  // POST /api/admin/login
-app.use('/api', postsRouter) // /api/posts、/api/admin/posts ...
+// 挂载路由：统一挂在 /api/blog 下（与 admin-server 的 /api/admin 隔离）
+app.use('/api/blog', authRouter)  // POST /api/blog/admin/login
+app.use('/api/blog', postsRouter) // /api/blog/posts、/api/blog/admin/posts ...
 
 // 404 兜底：未匹配到任何路由
 app.use((req, res) => {

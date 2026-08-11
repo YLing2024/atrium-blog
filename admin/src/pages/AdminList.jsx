@@ -1,5 +1,5 @@
 // AdminList.jsx —— 文章管理列表
-// 表格展示全部文章（标题 / 状态 / 更新时间 / 标签），提供新建、编辑、删除
+// 编辑式列表展示全部文章（标题 / 标签 / 状态 / 更新时间），提供新建、编辑、删除
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { getAdminPosts, deletePost, logout } from '../api'
@@ -58,15 +58,18 @@ export default function AdminList() {
   }
 
   return (
-    <div className="admin-panel">
+    <div className="minimalist-panel">
       <div className="panel-head">
-        <h1 className="panel-title">文章管理</h1>
+        <div className="panel-head-text">
+          <h1 className="panel-title">文章管理</h1>
+          <p className="panel-tip">共 {list.length} 篇，含草稿</p>
+        </div>
         <div className="panel-actions">
           <button className="btn btn-ghost" onClick={handleLogout}>
             退出登录
           </button>
           <Link className="btn btn-primary" to="/new">
-            ＋ 新建文章
+            新建文章
           </Link>
         </div>
       </div>
@@ -78,41 +81,41 @@ export default function AdminList() {
       ) : list.length === 0 ? (
         <p className="hint">还没有文章，点击右上角「新建文章」开始写作。</p>
       ) : (
-        <table className="table">
-          <thead>
-            <tr>
-              <th>标题</th>
-              <th>状态</th>
-              <th>更新时间</th>
-              <th>标签</th>
-              <th className="col-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((post) => (
-              <tr key={post.id}>
-                <td className="td-title">{post.title}</td>
-                <td>
+        <ul className="post-list">
+          {list.map((post) => (
+            <li key={post.id} className="post-item">
+              <div className="post-item-main">
+                <Link className="post-item-title" to={`/edit/${post.id}`}>
+                  {post.title}
+                </Link>
+                <div className="post-item-meta">
                   <span
-                    className={post.published ? 'badge badge-on' : 'badge badge-off'}
+                    className={
+                      post.published ? 'badge badge-on' : 'badge badge-off'
+                    }
                   >
                     {post.published ? '已发布' : '草稿'}
                   </span>
-                </td>
-                <td className="td-date">{formatDate(post.updated_at)}</td>
-                <td className="td-tags">{post.tags.join('、') || '—'}</td>
-                <td className="td-actions">
-                  <Link className="btn btn-sm" to={`/edit/${post.id}`}>
-                    编辑
-                  </Link>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(post)}>
-                    删除
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  <span className="post-item-date">{formatDate(post.updated_at)}</span>
+                  {post.tags.length > 0 && (
+                    <span className="post-item-tags">{post.tags.join('、')}</span>
+                  )}
+                </div>
+              </div>
+              <div className="post-item-actions">
+                <Link className="btn btn-sm" to={`/edit/${post.id}`}>
+                  编辑
+                </Link>
+                <button
+                  className="btn btn-sm btn-danger"
+                  onClick={() => handleDelete(post)}
+                >
+                  删除
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

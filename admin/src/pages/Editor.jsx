@@ -96,7 +96,7 @@ export default function Editor() {
   if (loading) return <p className="hint">加载中…</p>
 
   return (
-    <div className="editor">
+    <div className="minimalist-editor">
       <div className="editor-head">
         <Link className="back-link" to="/">
           ← 返回列表
@@ -113,88 +113,94 @@ export default function Editor() {
           handleSave(form.published)
         }}
       >
-        <label className="field">
-          <span className="field-label">标题 *</span>
-          <input
-            className="input"
-            type="text"
-            value={form.title}
-            onChange={(e) => setField('title', e.target.value)}
-            placeholder="文章标题"
-          />
-        </label>
-
-        <div className="field-row">
+        <section className="form-section">
           <label className="field">
-            <span className="field-label">Slug（访问链接，留空自动生成）</span>
+            <span className="field-label">标题 *</span>
             <input
-              className="input"
+              className="input input-title"
               type="text"
-              value={form.slug}
-              onChange={(e) => setField('slug', e.target.value)}
-              placeholder="my-first-post"
+              value={form.title}
+              onChange={(e) => setField('title', e.target.value)}
+              placeholder="文章标题"
+            />
+          </label>
+
+          <div className="field-row">
+            <label className="field">
+              <span className="field-label">Slug（访问链接，留空自动生成）</span>
+              <input
+                className="input"
+                type="text"
+                value={form.slug}
+                onChange={(e) => setField('slug', e.target.value)}
+                placeholder="my-first-post"
+              />
+            </label>
+
+            <label className="field">
+              <span className="field-label">标签（逗号分隔）</span>
+              <input
+                className="input"
+                type="text"
+                value={tagsText}
+                onChange={(e) => setTagsText(e.target.value)}
+                placeholder="前端, 笔记"
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="form-section">
+          <label className="field">
+            <span className="field-label">摘要</span>
+            <textarea
+              className="textarea"
+              rows="2"
+              value={form.excerpt}
+              onChange={(e) => setField('excerpt', e.target.value)}
+              placeholder="列表页显示的摘要"
             />
           </label>
 
           <label className="field">
-            <span className="field-label">标签（逗号分隔）</span>
-            <input
-              className="input"
-              type="text"
-              value={tagsText}
-              onChange={(e) => setTagsText(e.target.value)}
-              placeholder="前端, 笔记"
+            <span className="field-label">内容（Markdown）</span>
+            <textarea
+              className="textarea textarea-lg"
+              rows="18"
+              value={form.content}
+              onChange={(e) => setField('content', e.target.value)}
+              placeholder="支持 Markdown 语法：标题、列表、代码块、表格…"
             />
           </label>
-        </div>
+        </section>
 
-        <label className="field">
-          <span className="field-label">摘要</span>
-          <textarea
-            className="textarea"
-            rows="2"
-            value={form.excerpt}
-            onChange={(e) => setField('excerpt', e.target.value)}
-            placeholder="列表页显示的摘要"
-          />
-        </label>
+        <section className="form-section form-section-last">
+          <label className="checkbox-field">
+            <input
+              type="checkbox"
+              checked={form.published}
+              onChange={(e) => setField('published', e.target.checked)}
+            />
+            <span>发布状态（勾选为发布，取消勾选则为草稿）</span>
+          </label>
 
-        <label className="field">
-          <span className="field-label">内容（Markdown）</span>
-          <textarea
-            className="textarea textarea-lg"
-            rows="18"
-            value={form.content}
-            onChange={(e) => setField('content', e.target.value)}
-            placeholder="支持 Markdown 语法：标题、列表、代码块、表格…"
-          />
-        </label>
-
-        <label className="checkbox-field">
-          <input
-            type="checkbox"
-            checked={form.published}
-            onChange={(e) => setField('published', e.target.checked)}
-          />
-          <span>发布状态（勾选为发布，取消勾选则为草稿）</span>
-        </label>
-
-        <div className="editor-actions">
-          <button className="btn btn-ghost" type="button" onClick={() => navigate('/')}>
-            取消
-          </button>
-          <button
-            className="btn"
-            type="button"
-            disabled={saving}
-            onClick={() => handleSave(false)}
-          >
-            {saving ? '保存中…' : '存为草稿'}
-          </button>
-          <button className="btn btn-primary" type="submit" disabled={saving}>
-            {saving ? '保存中…' : isEdit ? '保存修改' : '发布'}
-          </button>
-        </div>
+          <div className="editor-actions">
+            <button className="btn btn-ghost" type="button" onClick={() => navigate('/')}>
+              取消
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={saving}
+              onClick={() => handleSave(false)}
+            >
+              {saving ? '保存中…' : '存为草稿'}
+            </button>
+            <button className="btn btn-primary" type="submit" disabled={saving}>
+              {saving ? '保存中…' : isEdit ? '保存修改' : '发布'}
+            </button>
+          </div>
+        </section>
       </form>
     </div>
   )

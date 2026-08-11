@@ -1,7 +1,8 @@
 // api.js —— 管理后台请求封装
 // 自动携带 localStorage 中的 JWT；收到 401 时清除 token 并跳转登录页
 
-const BASE = '/api'
+// 后端路由统一挂在 /api/blog 前缀下
+const API_BASE = '/api/blog'
 const TOKEN_KEY = 'blog_admin_token'
 
 // ---------- token 读写 ----------
@@ -32,7 +33,7 @@ async function request(path, options = {}) {
   const token = getToken()
   if (token) headers.Authorization = `Bearer ${token}`
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     ...fetchOptions,
     headers,
     body: fetchOptions.body ? JSON.stringify(fetchOptions.body) : undefined,
@@ -46,10 +47,12 @@ async function request(path, options = {}) {
   }
 
   // 401 且不是登录接口：清除 token 并跳转登录页
+  // 用 BASE_URL 拼接，兼容 base: '/blog/admin/' 下部署的路径
   if (res.status === 401 && redirectOn401) {
     setToken('')
-    if (window.location.pathname !== '/login') {
-      window.location.href = '/login'
+    const loginPath = `${import.meta.env.BASE_URL}login`
+    if (window.location.pathname !== loginPath) {
+      window.location.href = loginPath
     }
     throw new Error('登录已过期，请重新登录')
   }

@@ -36,45 +36,49 @@ export default function Login() {
   }
 
   return (
-    <div className="login-box">
-      <h1 className="login-title">登录</h1>
-      <p className="login-tip">默认账号：admin / admin123</p>
+    <div className="login-page">
+      <div className="minimalist-card">
+        <div className="login-head">
+          <h1 className="login-title">博客管理后台</h1>
+          <p className="login-tip">登录以发布与维护文章</p>
+        </div>
 
-      {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error">{error}</p>}
 
-      <form onSubmit={handleSubmit}>
-        <label className="field">
-          <span className="field-label">账号</span>
-          <input
-            className="input"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="请输入管理员账号"
-            autoComplete="username"
-          />
-        </label>
+        <form onSubmit={handleSubmit}>
+          <label className="field">
+            <span className="field-label">账号</span>
+            <input
+              className="input"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="请输入管理员账号"
+              autoComplete="username"
+            />
+          </label>
 
-        <label className="field">
-          <span className="field-label">密码</span>
-          <input
-            className="input"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="请输入密码"
-            autoComplete="current-password"
-          />
-        </label>
+          <label className="field">
+            <span className="field-label">密码</span>
+            <input
+              className="input"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="请输入密码"
+              autoComplete="current-password"
+            />
+          </label>
 
-        <button className="btn btn-primary btn-block" type="submit" disabled={loading}>
-          {loading ? '登录中…' : '登录'}
-        </button>
-      </form>
+          <button className="btn btn-primary btn-block" type="submit" disabled={loading}>
+            {loading ? '登录中…' : '登录'}
+          </button>
+        </form>
 
-      <Link className="login-back" to="/">
-        ← 返回博客前台
-      </Link>
+        <Link className="login-back" to="/">
+          ← 返回博客前台
+        </Link>
+      </div>
     </div>
   )
 }

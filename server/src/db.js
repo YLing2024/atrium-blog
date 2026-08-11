@@ -23,6 +23,15 @@ db.pragma('foreign_keys = ON')
 
 // ---------- 建表 ----------
 db.exec(`
+  -- 合集表：slug 唯一，用于把文章分组归档
+  CREATE TABLE IF NOT EXISTS collections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    slug        TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+  );
+
   -- 管理员用户表：password 存储 bcrypt 哈希
   CREATE TABLE IF NOT EXISTS users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +40,7 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   );
 
-  -- 文章表：tags 以逗号分隔的字符串存储
+  -- 文章表：tags 以逗号分隔的字符串存储；collection_id 关联合集（可为空）
   CREATE TABLE IF NOT EXISTS posts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT NOT NULL,
@@ -51,6 +60,17 @@ db.exec(`
     post_count INTEGER NOT NULL DEFAULT 0
   );
 `)
+
+// ---------- 迁移：兼容已有数据库 ----------
+// 旧版 posts 表没有 collection_id 列，检测到缺失时通过 ALTER TABLE 补充
+// （collections 表必须已存在，故放在建表语句之后执行）
+const postCols = db.prepare('PRAGMA table_info(posts)').all()
+if (!postCols.some((c) => c.name === 'collection_id')) {
+  db.exec(
+    'ALTER TABLE posts ADD COLUMN collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL'
+  )
+  console.log('[db] posts 表已新增 collection_id 列')
+}
 
 // ---------- 标签辅助函数 ----------
 

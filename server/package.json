@@ -12,6 +12,8 @@
     "bcryptjs": "^2",
     "better-sqlite3": "^11",
     "express": "^4",
-    "jsonwebtoken": "^9"
+    "ioredis": "^5",
+    "jsonwebtoken": "^9",
+    "multer": "^2.2.0"
   }
 }

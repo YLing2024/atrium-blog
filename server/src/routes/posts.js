@@ -9,35 +9,97 @@
 //   DELETE /api/admin/posts/:id    删除文章
 
 const express = require('express')
+const path = require('path')
+const fs = require('fs')
+const multer = require('multer')
 const { db, parseTags, rebuildTags } = require('../db')
 const { requireAuth } = require('../auth')
 
 const router = express.Router()
 
+// ---- 博客图片上传（管理接口）：存 uploads/，公开访问 /api/blog/uploads/<name> ----
+const UPLOAD_DIR = path.join(__dirname, '..', 'uploads')
+fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase().slice(0, 10)
+      cb(null, `${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`)
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+})
+
+// POST /api/blog/admin/upload（需鉴权）：返回 { url: '/api/blog/uploads/<name>' }
+router.post('/admin/upload', requireAuth, upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ message: '未收到图片（字段名 image）' })
+  res.json({ url: `/api/blog/uploads/${req.file.filename}` })
+})
+
+// GET /api/blog/uploads/:name（公开）：返回图片文件
+router.get('/uploads/:name', (req, res) => {
+  const name = path.basename(req.params.name || '')
+  if (!name || name.includes('..')) return res.status(400).json({ message: '非法文件名' })
+  const file = path.join(UPLOAD_DIR, name)
+  if (!fs.existsSync(file)) return res.status(404).json({ message: '图片不存在' })
+  res.sendFile(file)
+})
+
 // 列表每页条数
 const PAGE_SIZE = 10
+
+// 文章查询字段：附带合集信息（LEFT JOIN collections，别名避免列名冲突）
+const POST_COLS = `
+  p.id, p.title, p.slug, p.content, p.excerpt, p.tags, p.published,
+  p.created_at, p.updated_at,
+  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
+`
+const POST_COLS_NO_CONTENT = `
+  p.id, p.title, p.slug, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
+  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
+`
+// 文章查询统一拼接的 JOIN 片段
+const POST_JOIN =
+  'FROM posts p LEFT JOIN collections c ON c.id = p.collection_id'
 
 // ---------- 工具函数 ----------
 
 // 生成 slug：转小写、空格转短横线、过滤非法字符
-// 中文标题无法生成可用 slug 时，退回 post-<时间戳> 形式
-function slugify(text) {
+// 中文标题无法生成可用 slug 时，退回 <fallback>-<时间戳> 形式（默认 post）
+function slugify(text, fallback = 'post') {
   const slug = String(text || '')
     .toLowerCase()
     .trim()
     .replace(/\s+/g, '-')
     .replace(/[^a-z0-9\u4e00-\u9fa5-]/g, '')
     .replace(/^-+|-+$/g, '')
-  return slug || `post-${Date.now()}`
+  return slug || `${fallback}-${Date.now()}`
 }
 
-// 把数据库行整理成对外结构：published 转布尔、tags 转数组
+// 校验并解析 collection_id（空/null 视为不关联合集，返回 null）
+// 返回 null 表示无合集；返回 undefined 表示参数未提供（用于区分"不改动"）
+function parseCollectionId(collectionId) {
+  if (collectionId === undefined) return undefined
+  if (collectionId === null || collectionId === '') return null
+  const id = Number(collectionId)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const exists = db.prepare('SELECT id FROM collections WHERE id = ?').get(id)
+  return exists ? id : null
+}
+
+// 把数据库行整理成对外结构：published 转布尔、tags 转数组、collection 为对象或 null
 function toPost(row) {
   if (!row) return null
+  const { collection_id, collection_name, collection_slug, ...rest } = row
   return {
-    ...row,
+    ...rest,
     published: !!row.published,
     tags: parseTags(row.tags),
+    collection:
+      collection_id != null
+        ? { id: collection_id, name: collection_name, slug: collection_slug }
+        : null,
   }
 }
 
@@ -54,18 +116,18 @@ router.get('/posts', (req, res) => {
   const tag = String(req.query.tag || '').trim()
 
   // 动态拼接筛选条件
-  const conditions = ['published = 1']
+  const conditions = ['p.published = 1']
   const params = []
   if (tag) {
     // 用 "," + tags + "," 包起来做匹配，避免"前端"误匹配"前后端"
-    conditions.push("(',' || tags || ',') LIKE ? ESCAPE '\\'")
+    conditions.push("(',' || p.tags || ',') LIKE ? ESCAPE '\\'")
     params.push(`%,${escapeLike(tag)},%`)
   }
   const where = conditions.join(' AND ')
 
   // 总数与总页数
   const total = db
-    .prepare(`SELECT COUNT(*) AS n FROM posts WHERE ${where}`)
+    .prepare(`SELECT COUNT(*) AS n FROM posts p WHERE ${where}`)
     .get(...params).n
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
@@ -73,10 +135,10 @@ router.get('/posts', (req, res) => {
   // 分页查询（列表接口不返回正文，减小传输量）
   const list = db
     .prepare(
-      `SELECT id, title, slug, excerpt, tags, created_at, updated_at
-       FROM posts
+      `SELECT ${POST_COLS_NO_CONTENT}
+       ${POST_JOIN}
        WHERE ${where}
-       ORDER BY created_at DESC, id DESC
+       ORDER BY p.created_at DESC, p.id DESC
        LIMIT ? OFFSET ?`
     )
     .all(...params, PAGE_SIZE, (safePage - 1) * PAGE_SIZE)
@@ -94,7 +156,11 @@ router.get('/posts', (req, res) => {
 // GET /api/posts/:slug 公开文章详情（仅已发布）
 router.get('/posts/:slug', (req, res) => {
   const post = db
-    .prepare('SELECT * FROM posts WHERE slug = ? AND published = 1')
+    .prepare(
+      `SELECT ${POST_COLS}
+       ${POST_JOIN}
+       WHERE p.slug = ? AND p.published = 1`
+    )
     .get(req.params.slug)
   if (!post) {
     return res.status(404).json({ message: '文章不存在或未发布' })
@@ -102,12 +168,54 @@ router.get('/posts/:slug', (req, res) => {
   res.json(toPost(post))
 })
 
+// ---------- 合集公开接口 ----------
+
+// GET /api/collections 公开合集列表：含已发布文章数
+router.get('/collections', (req, res) => {
+  const list = db
+    .prepare(
+      `SELECT c.id, c.name, c.slug, c.description, c.created_at,
+              COUNT(p.id) AS post_count
+       FROM collections c
+       LEFT JOIN posts p ON p.collection_id = c.id AND p.published = 1
+       GROUP BY c.id
+       ORDER BY c.created_at ASC, c.id ASC`
+    )
+    .all()
+    .map((row) => ({ ...row, post_count: Number(row.post_count) }))
+  res.json({ list })
+})
+
+// GET /api/collections/:slug 公开合集详情：附该合集已发布文章列表
+router.get('/collections/:slug', (req, res) => {
+  const collection = db
+    .prepare('SELECT * FROM collections WHERE slug = ?')
+    .get(req.params.slug)
+  if (!collection) {
+    return res.status(404).json({ message: '合集不存在' })
+  }
+  const posts = db
+    .prepare(
+      `SELECT ${POST_COLS_NO_CONTENT}
+       ${POST_JOIN}
+       WHERE p.collection_id = ? AND p.published = 1
+       ORDER BY p.created_at DESC, p.id DESC`
+    )
+    .all(collection.id)
+    .map(toPost)
+  res.json({ ...collection, description: collection.description || '', posts })
+})
+
 // ---------- 管理接口（需登录） ----------
 
 // GET /api/admin/posts 全部文章（含草稿），按更新时间倒序
 router.get('/admin/posts', requireAuth, (req, res) => {
   const list = db
-    .prepare('SELECT * FROM posts ORDER BY updated_at DESC, id DESC')
+    .prepare(
+      `SELECT ${POST_COLS}
+       ${POST_JOIN}
+       ORDER BY p.updated_at DESC, p.id DESC`
+    )
     .all()
     .map(toPost)
   res.json({ list })
@@ -115,7 +223,8 @@ router.get('/admin/posts', requireAuth, (req, res) => {
 
 // POST /api/admin/posts 新建文章
 router.post('/admin/posts', requireAuth, (req, res) => {
-  const { title, slug, content = '', excerpt = '', tags, published } = req.body || {}
+  const { title, slug, content = '', excerpt = '', tags, published, collection_id } =
+    req.body || {}
 
   // 标题必填
   if (!title || !title.trim()) {
@@ -126,6 +235,12 @@ router.post('/admin/posts', requireAuth, (req, res) => {
   const tagList = Array.isArray(tags) ? tags : parseTags(tags)
   const slugValue = slugify(slug || title)
   const publishedValue = published ? 1 : 0
+  const collectionId = parseCollectionId(collection_id) ?? null
+
+  // collection_id 校验：指定但不存在时报错
+  if (collectionId === null && collection_id !== undefined && collection_id !== null && collection_id !== '') {
+    return res.status(400).json({ message: '合集不存在' })
+  }
 
   // slug 唯一性检查
   const exists = db.prepare('SELECT id FROM posts WHERE slug = ?').get(slugValue)
@@ -135,15 +250,25 @@ router.post('/admin/posts', requireAuth, (req, res) => {
 
   const result = db
     .prepare(
-      `INSERT INTO posts (title, slug, content, excerpt, tags, published)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO posts (title, slug, content, excerpt, tags, published, collection_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(title.trim(), slugValue, content, excerpt.trim(), tagList.join(','), publishedValue)
+    .run(
+      title.trim(),
+      slugValue,
+      content,
+      excerpt.trim(),
+      tagList.join(','),
+      publishedValue,
+      collectionId
+    )
 
   // 更新标签统计
   rebuildTags()
 
-  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(result.lastInsertRowid)
+  const post = db
+    .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.id = ?`)
+    .get(result.lastInsertRowid)
   res.status(201).json(toPost(post))
 })
 
@@ -155,11 +280,20 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     return res.status(404).json({ message: '文章不存在' })
   }
 
-  const { title, slug, content, excerpt, tags, published } = req.body || {}
+  const { title, slug, content, excerpt, tags, published, collection_id } = req.body || {}
   const tagList = Array.isArray(tags) ? tags : parseTags(tags ?? post.tags)
   const publishedValue =
     published === undefined ? post.published : published ? 1 : 0
   const slugValue = slugify(slug || title || post.slug)
+
+  // collection_id：undefined 表示不改动；null/'' 表示清除；否则校验存在性
+  let collectionId = post.collection_id
+  if (collection_id !== undefined) {
+    collectionId = parseCollectionId(collection_id)
+    if (collectionId === null && collection_id !== null && collection_id !== '') {
+      return res.status(400).json({ message: '合集不存在' })
+    }
+  }
 
   // slug 唯一性检查（排除自身）
   const dup = db
@@ -172,7 +306,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
   db.prepare(
     `UPDATE posts
      SET title = ?, slug = ?, content = ?, excerpt = ?, tags = ?, published = ?,
-         updated_at = datetime('now', 'localtime')
+         collection_id = ?, updated_at = datetime('now', 'localtime')
      WHERE id = ?`
   ).run(
     (title ?? post.title).trim(),
@@ -181,12 +315,15 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     (excerpt ?? post.excerpt).trim(),
     tagList.join(','),
     publishedValue,
+    collectionId,
     id
   )
 
   rebuildTags()
 
-  const updated = db.prepare('SELECT * FROM posts WHERE id = ?').get(id)
+  const updated = db
+    .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.id = ?`)
+    .get(id)
   res.json(toPost(updated))
 })
 
@@ -198,6 +335,99 @@ router.delete('/admin/posts/:id', requireAuth, (req, res) => {
     return res.status(404).json({ message: '文章不存在' })
   }
   rebuildTags()
+  res.json({ ok: true, message: '已删除' })
+})
+
+// ---------- 合集管理接口（需登录） ----------
+
+// GET /api/admin/collections 全部合集（含草稿文章数）
+router.get('/admin/collections', requireAuth, (req, res) => {
+  const list = db
+    .prepare(
+      `SELECT c.id, c.name, c.slug, c.description, c.created_at,
+              COUNT(p.id) AS post_count
+       FROM collections c
+       LEFT JOIN posts p ON p.collection_id = c.id
+       GROUP BY c.id
+       ORDER BY c.created_at ASC, c.id ASC`
+    )
+    .all()
+    .map((row) => ({ ...row, post_count: Number(row.post_count) }))
+  res.json({ list })
+})
+
+// POST /api/admin/collections 新建合集
+router.post('/admin/collections', requireAuth, (req, res) => {
+  const { name, slug, description = '' } = req.body || {}
+
+  // 名称必填
+  if (!name || !name.trim()) {
+    return res.status(400).json({ message: '合集名称不能为空' })
+  }
+
+  const slugValue = slugify(slug || name, 'collection')
+
+  // slug 唯一性检查
+  const exists = db.prepare('SELECT id FROM collections WHERE slug = ?').get(slugValue)
+  if (exists) {
+    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
+  }
+
+  const result = db
+    .prepare('INSERT INTO collections (name, slug, description) VALUES (?, ?, ?)')
+    .run(name.trim(), slugValue, (description || '').trim())
+
+  const collection = db
+    .prepare('SELECT * FROM collections WHERE id = ?')
+    .get(result.lastInsertRowid)
+  res.status(201).json(collection)
+})
+
+// PUT /api/admin/collections/:id 更新合集
+router.put('/admin/collections/:id', requireAuth, (req, res) => {
+  const id = Number(req.params.id)
+  const collection = db.prepare('SELECT * FROM collections WHERE id = ?').get(id)
+  if (!collection) {
+    return res.status(404).json({ message: '合集不存在' })
+  }
+
+  const { name, slug, description } = req.body || {}
+  const slugValue = slugify(slug || name || collection.slug, 'collection')
+
+  // slug 唯一性检查（排除自身）
+  const dup = db
+    .prepare('SELECT id FROM collections WHERE slug = ? AND id != ?')
+    .get(slugValue, id)
+  if (dup) {
+    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
+  }
+
+  db.prepare(
+    `UPDATE collections
+     SET name = ?, slug = ?, description = ?
+     WHERE id = ?`
+  ).run(
+    (name ?? collection.name).trim(),
+    slugValue,
+    (description ?? collection.description ?? '').trim(),
+    id
+  )
+
+  const updated = db.prepare('SELECT * FROM collections WHERE id = ?').get(id)
+  res.json(updated)
+})
+
+// DELETE /api/admin/collections/:id 删除合集（文章 collection_id 置 NULL）
+router.delete('/admin/collections/:id', requireAuth, (req, res) => {
+  const id = Number(req.params.id)
+  const collection = db.prepare('SELECT id FROM collections WHERE id = ?').get(id)
+  if (!collection) {
+    return res.status(404).json({ message: '合集不存在' })
+  }
+
+  // 显式解除关联（外键 ON DELETE SET NULL 兜底，双保险）
+  db.prepare('UPDATE posts SET collection_id = NULL WHERE collection_id = ?').run(id)
+  db.prepare('DELETE FROM collections WHERE id = ?').run(id)
   res.json({ ok: true, message: '已删除' })
 })
 
