@@ -36,7 +36,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: '服务器内部错误' })
 })
 
-// 启动服务
-app.listen(PORT, () => {
+// 启动服务（仅绑定 127.0.0.1：nginx 反代可达，杜绝公网直连伪造 X-Auth-User 绕过 SSO）
+app.listen(PORT, '127.0.0.1', () => {
   console.log(`博客 API 服务已启动：http://localhost:${PORT}`)
 })
