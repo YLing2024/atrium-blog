@@ -3,6 +3,10 @@
  * 黑白灰为底，少量琥珀色点缀；大字标题、充足留白、细线分隔；
  * 使用系统字体栈，不加载任何 Web Font；深色模式跟随系统。 */
 
+/* highlight.js 主题：浅色 github / 深色 github-dark（按系统配色加载） */
+@import 'highlight.js/styles/github.css' (prefers-color-scheme: light);
+@import 'highlight.js/styles/github-dark.css' (prefers-color-scheme: dark);
+
 :root {
   --bg: #fafaf9;
   --fg: #1c1917;

@@ -2,10 +2,24 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { marked } from 'marked'
+import hljs from 'highlight.js'
 import { getPost } from '../api'
 
 // 开启 GFM 表格与自动换行
 marked.setOptions({ gfm: true, breaks: true })
+
+// 自定义 code renderer：带语言标记的代码块交给 highlight.js 高亮，其余走原样输出
+const renderer = new marked.Renderer()
+renderer.code = ({ text, lang }) => {
+  const language = (lang || '').split(/\s+/)[0]
+  const highlighted =
+    language && hljs.getLanguage(language)
+      ? hljs.highlight(text, { language, ignoreIllegals: true }).value
+      : hljs.highlightAuto(text).value
+  const cls = language ? `hljs language-${language}` : 'hljs'
+  return `<pre><code class="${cls}">${highlighted}</code></pre>`
+}
+marked.use({ renderer })
 
 // 把数据库里的 "YYYY-MM-DD HH:MM:SS" 格式化为中文日期
 function formatDate(str) {
