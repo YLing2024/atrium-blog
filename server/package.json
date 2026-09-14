@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "bcryptjs": "^2",
-    "better-sqlite3": "^11",
+    "better-sqlite3": "^13.0.3",
     "express": "^4",
     "ioredis": "^5",
     "jsonwebtoken": "^9",
