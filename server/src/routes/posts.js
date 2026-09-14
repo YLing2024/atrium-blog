@@ -54,11 +54,13 @@ const PAGE_SIZE = 10
 const POST_COLS = `
   p.id, p.title, p.slug, p.public_id, p.content, p.excerpt, p.tags, p.published,
   p.created_at, p.updated_at,
-  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
+  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug,
+  c.public_id AS collection_public_id
 `
 const POST_COLS_NO_CONTENT = `
   p.id, p.title, p.slug, p.public_id, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
-  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
+  c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug,
+  c.public_id AS collection_public_id
 `
 // 文章查询统一拼接的 JOIN 片段
 const POST_JOIN =
@@ -92,14 +94,19 @@ function parseCollectionId(collectionId) {
 // 把数据库行整理成对外结构：published 转布尔、tags 转数组、collection 为对象或 null
 function toPost(row) {
   if (!row) return null
-  const { collection_id, collection_name, collection_slug, ...rest } = row
+  const { collection_id, collection_name, collection_slug, collection_public_id, ...rest } = row
   return {
     ...rest,
     published: !!row.published,
     tags: parseTags(row.tags),
     collection:
       collection_id != null
-        ? { id: collection_id, name: collection_name, slug: collection_slug }
+        ? {
+            id: collection_id,
+            name: collection_name,
+            slug: collection_slug,
+            public_id: collection_public_id || '',
+          }
         : null,
   }
 }
@@ -110,8 +117,8 @@ function escapeLike(str) {
 }
 
 // slug 退化为内部别名（URL 已改用雪花 public_id）：重名不再报 409，自动加序号后缀
-function uniqueSlug(base, excludeId = null) {
-  const find = db.prepare('SELECT id FROM posts WHERE slug = ?')
+function uniqueSlug(table, base, excludeId = null) {
+  const find = db.prepare(`SELECT id FROM ${table} WHERE slug = ?`)
   let candidate = base
   let n = 1
   for (;;) {
@@ -197,7 +204,7 @@ router.get('/posts/:slug', optionalAuth, (req, res) => {
 router.get('/collections', (req, res) => {
   const list = db
     .prepare(
-      `SELECT c.id, c.name, c.slug, c.description, c.created_at,
+      `SELECT c.id, c.name, c.slug, c.public_id, c.description, c.created_at,
               COUNT(p.id) AS post_count
        FROM collections c
        LEFT JOIN posts p ON p.collection_id = c.id AND p.published = 1
@@ -209,11 +216,12 @@ router.get('/collections', (req, res) => {
   res.json({ list })
 })
 
-// GET /api/collections/:slug 公开合集详情：附该合集已发布文章列表
+// GET /api/collections/:slug 公开合集详情（:slug 可为雪花 public_id 或历史 slug）
 router.get('/collections/:slug', (req, res) => {
-  const collection = db
-    .prepare('SELECT * FROM collections WHERE slug = ?')
-    .get(req.params.slug)
+  const key = String(req.params.slug || '')
+  const collection =
+    db.prepare('SELECT * FROM collections WHERE public_id = ?').get(key) ||
+    db.prepare('SELECT * FROM collections WHERE slug = ?').get(key)
   if (!collection) {
     return res.status(404).json({ message: '合集不存在' })
   }
@@ -276,7 +284,7 @@ router.post('/admin/posts', requireAuth, (req, res) => {
   // tags 支持数组或逗号分隔字符串两种形式
   const tagList = Array.isArray(tags) ? tags : parseTags(tags)
   const publicId = nextId()
-  const slugValue = uniqueSlug(slugify(slug || title))
+  const slugValue = uniqueSlug('posts', slugify(slug || title))
   const publishedValue = published ? 1 : 0
   const collectionId = parseCollectionId(collection_id) ?? null
 
@@ -324,7 +332,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     published === undefined ? post.published : published ? 1 : 0
   // slug 只是内部别名：不显式给出就保持不变（改标题不再改别名、更不动 URL）
   const baseSlug = slug && String(slug).trim() ? slugify(slug) : post.slug || slugify(title || post.title)
-  const slugValue = uniqueSlug(baseSlug, id)
+  const slugValue = uniqueSlug('posts', baseSlug, id)
 
   // collection_id：undefined 表示不改动；null/'' 表示清除；否则校验存在性
   let collectionId = post.collection_id
@@ -376,7 +384,7 @@ router.delete('/admin/posts/:id', requireAuth, (req, res) => {
 router.get('/admin/collections', requireAuth, (req, res) => {
   const list = db
     .prepare(
-      `SELECT c.id, c.name, c.slug, c.description, c.created_at,
+      `SELECT c.id, c.name, c.slug, c.public_id, c.description, c.created_at,
               COUNT(p.id) AS post_count
        FROM collections c
        LEFT JOIN posts p ON p.collection_id = c.id
@@ -397,17 +405,12 @@ router.post('/admin/collections', requireAuth, (req, res) => {
     return res.status(400).json({ message: '合集名称不能为空' })
   }
 
-  const slugValue = slugify(slug || name, 'collection')
-
-  // slug 唯一性检查
-  const exists = db.prepare('SELECT id FROM collections WHERE slug = ?').get(slugValue)
-  if (exists) {
-    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
-  }
+  const slugValue = uniqueSlug('collections', slugify(slug || name, 'collection'))
+  const publicId = nextId()
 
   const result = db
-    .prepare('INSERT INTO collections (name, slug, description) VALUES (?, ?, ?)')
-    .run(name.trim(), slugValue, (description || '').trim())
+    .prepare('INSERT INTO collections (name, slug, public_id, description) VALUES (?, ?, ?, ?)')
+    .run(name.trim(), slugValue, publicId, (description || '').trim())
 
   const collection = db
     .prepare('SELECT * FROM collections WHERE id = ?')
@@ -424,15 +427,12 @@ router.put('/admin/collections/:id', requireAuth, (req, res) => {
   }
 
   const { name, slug, description } = req.body || {}
-  const slugValue = slugify(slug || name || collection.slug, 'collection')
-
-  // slug 唯一性检查（排除自身）
-  const dup = db
-    .prepare('SELECT id FROM collections WHERE slug = ? AND id != ?')
-    .get(slugValue, id)
-  if (dup) {
-    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
-  }
+  // slug 仅内部别名：不显式给出就保持不变
+  const baseSlug =
+    slug && String(slug).trim()
+      ? slugify(slug, 'collection')
+      : collection.slug || slugify(name || collection.name, 'collection')
+  const slugValue = uniqueSlug('collections', baseSlug, id)
 
   db.prepare(
     `UPDATE collections

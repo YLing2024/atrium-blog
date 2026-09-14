@@ -24,11 +24,12 @@ db.pragma('foreign_keys = ON')
 
 // ---------- 建表 ----------
 db.exec(`
-  -- 合集表：slug 唯一，用于把文章分组归档
+  -- 合集表：slug 唯一，用于把文章分组归档；public_id = 雪花 ID（URL 用它）
   CREATE TABLE IF NOT EXISTS collections (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     slug        TEXT NOT NULL UNIQUE,
+    public_id   TEXT,
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   );
@@ -75,28 +76,32 @@ if (!postCols.some((c) => c.name === 'collection_id')) {
   console.log('[db] posts 表已新增 collection_id 列')
 }
 
-// 旧库补 public_id（雪花 ID，文章 URL 标识），并为历史文章回填。
-// 回填用 created_at 作为时间源，让老文章的 ID 大致反映其创建时间；同毫秒内靠序列位区分。
-if (!postCols.some((c) => c.name === 'public_id')) {
-  db.exec('ALTER TABLE posts ADD COLUMN public_id TEXT')
-  console.log('[db] posts 表已新增 public_id 列')
-}
-{
+// 旧库补 public_id（雪花 ID：posts 文章、collections 合集的 URL 标识），并为历史数据回填。
+// 回填用 created_at 作为时间源，让老数据的 ID 大致反映其创建时间；同毫秒内靠序列位区分。
+function ensurePublicId(table) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+  if (!cols.some((c) => c.name === 'public_id')) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN public_id TEXT`)
+    console.log(`[db] ${table} 表已新增 public_id 列`)
+  }
   const pending = db
-    .prepare("SELECT id, created_at FROM posts WHERE public_id IS NULL OR public_id = '' ORDER BY id")
+    .prepare(`SELECT id, created_at FROM ${table} WHERE public_id IS NULL OR public_id = '' ORDER BY id`)
     .all()
   if (pending.length) {
-    const upd = db.prepare('UPDATE posts SET public_id = ? WHERE id = ?')
+    const upd = db.prepare(`UPDATE ${table} SET public_id = ? WHERE id = ?`)
     db.transaction(() => {
       for (const row of pending) {
         const ms = Date.parse(String(row.created_at || '').replace(' ', 'T'))
         upd.run(nextIdAt(Number.isFinite(ms) ? ms : Date.now()), row.id)
       }
     })()
-    console.log(`[db] 已为 ${pending.length} 篇文章回填 public_id（雪花 ID）`)
+    console.log(`[db] 已为 ${pending.length} 条 ${table} 记录回填 public_id（雪花 ID）`)
   }
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_public_id ON posts(public_id)')
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_${table}_public_id ON ${table}(public_id)`)
 }
+
+ensurePublicId('posts')
+ensurePublicId('collections')
 
 // ---------- 标签辅助函数 ----------
 
