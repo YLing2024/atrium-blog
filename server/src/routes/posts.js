@@ -1,7 +1,7 @@
 // routes/posts.js —— 文章相关路由
 // 公开接口（无需鉴权）：
 //   GET /api/posts          文章列表（仅已发布，支持 ?page= & tag=）
-//   GET /api/posts/:slug    文章详情（仅已发布）
+//   GET /api/posts/:slug    文章详情（已发布公开；草稿仅登录态可见，供后台点标题预览）
 // 管理接口（需鉴权 requireAuth）：
 //   GET    /api/admin/posts        全部文章（含草稿）
 //   POST   /api/admin/posts        新建文章
@@ -13,7 +13,7 @@ const path = require('path')
 const fs = require('fs')
 const multer = require('multer')
 const { db, parseTags, rebuildTags } = require('../db')
-const { requireAuth } = require('../auth')
+const { requireAuth, optionalAuth, signPreview, verifyPreview } = require('../auth')
 
 const router = express.Router()
 
@@ -153,16 +153,20 @@ router.get('/posts', (req, res) => {
   })
 })
 
-// GET /api/posts/:slug 公开文章详情（仅已发布）
-router.get('/posts/:slug', (req, res) => {
+// GET /api/posts/:slug 文章详情
+//   已发布 → 任何人可读
+//   草稿    → 仅「登录态」或有效预览令牌（?preview=）可读 —— 后台从列表点标题即走后者
+router.get('/posts/:slug', optionalAuth, (req, res) => {
   const post = db
     .prepare(
       `SELECT ${POST_COLS}
        ${POST_JOIN}
-       WHERE p.slug = ? AND p.published = 1`
+       WHERE p.slug = ?`
     )
     .get(req.params.slug)
-  if (!post) {
+  const canPreview =
+    !!req.user || verifyPreview(req.query.preview, req.params.slug)
+  if (!post || (!post.published && !canPreview)) {
     return res.status(404).json({ message: '文章不存在或未发布' })
   }
   res.json(toPost(post))
@@ -219,6 +223,23 @@ router.get('/admin/posts', requireAuth, (req, res) => {
     .all()
     .map(toPost)
   res.json({ list })
+})
+
+// GET /api/admin/posts/:id/preview-link 取该文章的「打开文章页」地址（需登录）
+//   已发布 → 公开地址；草稿 → 附短时效预览令牌（默认 30 分钟，绑定 slug），
+//   这样后台点标题能进文章页，而草稿对外仍是 404。
+router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
+  const post = db
+    .prepare('SELECT id, slug, published FROM posts WHERE id = ?')
+    .get(req.params.id)
+  if (!post) {
+    return res.status(404).json({ message: '文章不存在' })
+  }
+  const base = `/blog/${post.slug}`
+  res.json({
+    published: !!post.published,
+    url: post.published ? base : `${base}?preview=${encodeURIComponent(signPreview(post.slug))}`,
+  })
 })
 
 // POST /api/admin/posts 新建文章
