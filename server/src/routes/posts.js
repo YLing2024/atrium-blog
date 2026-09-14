@@ -14,6 +14,7 @@ const fs = require('fs')
 const multer = require('multer')
 const { db, parseTags, rebuildTags } = require('../db')
 const { requireAuth, optionalAuth, signPreview, verifyPreview } = require('../auth')
+const { nextId } = require('../snowflake')
 
 const router = express.Router()
 
@@ -51,12 +52,12 @@ const PAGE_SIZE = 10
 
 // 文章查询字段：附带合集信息（LEFT JOIN collections，别名避免列名冲突）
 const POST_COLS = `
-  p.id, p.title, p.slug, p.content, p.excerpt, p.tags, p.published,
+  p.id, p.title, p.slug, p.public_id, p.content, p.excerpt, p.tags, p.published,
   p.created_at, p.updated_at,
   c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
 `
 const POST_COLS_NO_CONTENT = `
-  p.id, p.title, p.slug, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
+  p.id, p.title, p.slug, p.public_id, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
   c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug
 `
 // 文章查询统一拼接的 JOIN 片段
@@ -108,6 +109,19 @@ function escapeLike(str) {
   return String(str).replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
+// slug 退化为内部别名（URL 已改用雪花 public_id）：重名不再报 409，自动加序号后缀
+function uniqueSlug(base, excludeId = null) {
+  const find = db.prepare('SELECT id FROM posts WHERE slug = ?')
+  let candidate = base
+  let n = 1
+  for (;;) {
+    const row = find.get(candidate)
+    if (!row || row.id === excludeId) return candidate
+    n += 1
+    candidate = `${base}-${n}`
+  }
+}
+
 // ---------- 公开接口 ----------
 
 // GET /api/posts 公开文章列表：仅 published=1，支持 ?page=&tag=
@@ -153,17 +167,22 @@ router.get('/posts', (req, res) => {
   })
 })
 
-// GET /api/posts/:slug 文章详情
+// 解析文章：优先按雪花 public_id（现行 URL），其次按 slug（兼容历史链接）
+function findPostByKey(key) {
+  const k = String(key || '')
+  if (!k) return undefined
+  const byPublicId = db
+    .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.public_id = ?`)
+    .get(k)
+  if (byPublicId) return byPublicId
+  return db.prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.slug = ?`).get(k)
+}
+
+// GET /api/posts/:slug 文章详情（:slug 可为雪花 public_id 或历史 slug）
 //   已发布 → 任何人可读
 //   草稿    → 仅「登录态」或有效预览令牌（?preview=）可读 —— 后台从列表点标题即走后者
 router.get('/posts/:slug', optionalAuth, (req, res) => {
-  const post = db
-    .prepare(
-      `SELECT ${POST_COLS}
-       ${POST_JOIN}
-       WHERE p.slug = ?`
-    )
-    .get(req.params.slug)
+  const post = findPostByKey(req.params.slug)
   const canPreview =
     !!req.user || verifyPreview(req.query.preview, req.params.slug)
   if (!post || (!post.published && !canPreview)) {
@@ -230,15 +249,17 @@ router.get('/admin/posts', requireAuth, (req, res) => {
 //   这样后台点标题能进文章页，而草稿对外仍是 404。
 router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
   const post = db
-    .prepare('SELECT id, slug, published FROM posts WHERE id = ?')
+    .prepare('SELECT id, slug, public_id, published FROM posts WHERE id = ?')
     .get(req.params.id)
   if (!post) {
     return res.status(404).json({ message: '文章不存在' })
   }
-  const base = `/blog/${post.slug}`
+  // URL 用雪花 ID；老文章万一没回填成功则退回 slug，保证链接永远可用
+  const base = `/blog/${post.public_id || post.slug}`
+  const key = post.public_id || post.slug
   res.json({
     published: !!post.published,
-    url: post.published ? base : `${base}?preview=${encodeURIComponent(signPreview(post.slug))}`,
+    url: post.published ? base : `${base}?preview=${encodeURIComponent(signPreview(key))}`,
   })
 })
 
@@ -254,7 +275,8 @@ router.post('/admin/posts', requireAuth, (req, res) => {
 
   // tags 支持数组或逗号分隔字符串两种形式
   const tagList = Array.isArray(tags) ? tags : parseTags(tags)
-  const slugValue = slugify(slug || title)
+  const publicId = nextId()
+  const slugValue = uniqueSlug(slugify(slug || title))
   const publishedValue = published ? 1 : 0
   const collectionId = parseCollectionId(collection_id) ?? null
 
@@ -263,20 +285,15 @@ router.post('/admin/posts', requireAuth, (req, res) => {
     return res.status(400).json({ message: '合集不存在' })
   }
 
-  // slug 唯一性检查
-  const exists = db.prepare('SELECT id FROM posts WHERE slug = ?').get(slugValue)
-  if (exists) {
-    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
-  }
-
   const result = db
     .prepare(
-      `INSERT INTO posts (title, slug, content, excerpt, tags, published, collection_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO posts (title, slug, public_id, content, excerpt, tags, published, collection_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       title.trim(),
       slugValue,
+      publicId,
       content,
       excerpt.trim(),
       tagList.join(','),
@@ -305,7 +322,9 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
   const tagList = Array.isArray(tags) ? tags : parseTags(tags ?? post.tags)
   const publishedValue =
     published === undefined ? post.published : published ? 1 : 0
-  const slugValue = slugify(slug || title || post.slug)
+  // slug 只是内部别名：不显式给出就保持不变（改标题不再改别名、更不动 URL）
+  const baseSlug = slug && String(slug).trim() ? slugify(slug) : post.slug || slugify(title || post.title)
+  const slugValue = uniqueSlug(baseSlug, id)
 
   // collection_id：undefined 表示不改动；null/'' 表示清除；否则校验存在性
   let collectionId = post.collection_id
@@ -314,14 +333,6 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     if (collectionId === null && collection_id !== null && collection_id !== '') {
       return res.status(400).json({ message: '合集不存在' })
     }
-  }
-
-  // slug 唯一性检查（排除自身）
-  const dup = db
-    .prepare('SELECT id FROM posts WHERE slug = ? AND id != ?')
-    .get(slugValue, id)
-  if (dup) {
-    return res.status(409).json({ message: `slug「${slugValue}」已存在，请更换` })
   }
 
   db.prepare(

@@ -6,6 +6,7 @@ const fs = require('fs')
 const path = require('path')
 const Database = require('better-sqlite3')
 const bcrypt = require('bcryptjs')
+const { nextIdAt } = require('./snowflake')
 
 // 数据库文件路径，可通过环境变量 DB_PATH 覆盖
 const DB_PATH =
@@ -41,10 +42,12 @@ db.exec(`
   );
 
   -- 文章表：tags 以逗号分隔的字符串存储；collection_id 关联合集（可为空）
+  -- public_id：雪花 ID，文章 URL 的标识（/blog/<public_id>）；slug 退化为内部别名/兼容旧链接
   CREATE TABLE IF NOT EXISTS posts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT NOT NULL,
     slug       TEXT NOT NULL UNIQUE,
+    public_id  TEXT,
     content    TEXT NOT NULL DEFAULT '',
     excerpt    TEXT NOT NULL DEFAULT '',
     tags       TEXT NOT NULL DEFAULT '',
@@ -70,6 +73,29 @@ if (!postCols.some((c) => c.name === 'collection_id')) {
     'ALTER TABLE posts ADD COLUMN collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL'
   )
   console.log('[db] posts 表已新增 collection_id 列')
+}
+
+// 旧库补 public_id（雪花 ID，文章 URL 标识），并为历史文章回填。
+// 回填用 created_at 作为时间源，让老文章的 ID 大致反映其创建时间；同毫秒内靠序列位区分。
+if (!postCols.some((c) => c.name === 'public_id')) {
+  db.exec('ALTER TABLE posts ADD COLUMN public_id TEXT')
+  console.log('[db] posts 表已新增 public_id 列')
+}
+{
+  const pending = db
+    .prepare("SELECT id, created_at FROM posts WHERE public_id IS NULL OR public_id = '' ORDER BY id")
+    .all()
+  if (pending.length) {
+    const upd = db.prepare('UPDATE posts SET public_id = ? WHERE id = ?')
+    db.transaction(() => {
+      for (const row of pending) {
+        const ms = Date.parse(String(row.created_at || '').replace(' ', 'T'))
+        upd.run(nextIdAt(Number.isFinite(ms) ? ms : Date.now()), row.id)
+      }
+    })()
+    console.log(`[db] 已为 ${pending.length} 篇文章回填 public_id（雪花 ID）`)
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_public_id ON posts(public_id)')
 }
 
 // ---------- 标签辅助函数 ----------
