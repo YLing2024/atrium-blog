@@ -53,12 +53,12 @@ async function verifyAdminSession(token) {
 }
 
 // 鉴权中间件：
-//   1. 第一优先：Nginx 探针注入的 X-Auth-User header（auth_request 已校验认证中心 token，内网信任）
-//   2. 回退：双通道校验 blog JWT → Admin 会话（Redis admin:session）
+//   1. 第一优先：Auth Gateway 注入的 X-Auth-User header（网关已校验登录，内网信任）
+//   2. 回退：双通道校验 blog JWT → Admin 会话（Redis admin:session）——仅旧客户端兼容
 async function requireAuth(req, res, next) {
   const authUser = req.headers['x-auth-user']
   if (authUser) {
-    req.user = { username: authUser, via: 'nginx-auth-request' }
+    req.user = { username: authUser, via: 'gateway' }
     return next()
   }
 
@@ -113,7 +113,7 @@ function verifyPreview(token, slug) {
 async function optionalAuth(req, res, next) {
   const authUser = req.headers['x-auth-user']
   if (authUser) {
-    req.user = { username: authUser, via: 'nginx-auth-request' }
+    req.user = { username: authUser, via: 'gateway' }
     return next()
   }
 
