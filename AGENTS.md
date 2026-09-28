@@ -18,7 +18,8 @@
 
 - Node 24，Express 4，CommonJS
 - **better-sqlite3 13.x**（注意：这是原生模块，Node 大版本升级后必须重装/重编译；曾因 11.x 在 Node 24 上原生崩溃而升到 13.0.3）
-- `jsonwebtoken`（管理接口主鉴权）、`ioredis`（第二通道：admin 会话）、`multer`（图片上传）
+- `jsonwebtoken`（本地兼容通道：管理接口 JWT）、`ioredis`（本地兼容通道：admin 会话）、`multer`（图片上传）
+  —— 生产管理接口主鉴权已由 Auth Gateway 负责（网关注入 `X-Auth-User`），这两条通道保留兼容
 - **雪花 ID**（`src/snowflake.js`）：文章/合集对外标识用 19 位字符串 ID，防枚举、时间有序
 
 ## 目录结构（server）
@@ -51,11 +52,11 @@ server/
 | GET/POST/PUT/DELETE | `/admin/collections[/:id]` | ✅ | 合集 CRUD |
 | POST | `/admin/upload` | ✅ | 图片上传 |
 
-## 鉴权（双通道）
+## 鉴权
 
-1. **JWT**（主通道）：`JWT_SECRET` 签发，7 天有效；生产由 nginx 探针 + `X-Auth-User` 覆盖大部分路径。
-2. **Redis admin 会话**（第二通道）：`admin:session:<token>`，12h 滑动续期，与 admin-server 共 key 空间；Redis 挂了不影响 JWT 通道（代码里显式忽略连接错误）。
-3. nginx 层：`/api/blog/admin/*` 走 SSO 探针鉴权；`/api/blog/*` 公开读放行。
+1. **主路径**：`/api/blog/admin/*` 由 **Auth Gateway**（`127.0.0.1:18920`，nginx 反代进来）鉴权后反代，网关注入 `X-Auth-User`；`requireAuth` 优先信任该头，不依赖业务站自己签发的凭证。
+2. **本地兼容通道（代码保留未删）**：blog JWT（`JWT_SECRET` 签发，7 天有效）与 Redis admin 会话（`admin:session:<token>`，12h 滑动续期，与 admin-server 共 key 空间，Redis 挂了不影响 JWT）。生产前端已不再使用，仅供旧客户端/脚本兼容。
+3. nginx 层：`/api/blog/*` 公开读放行；`/api/blog/admin/*` 交给 Auth Gateway 鉴权。配置里**不再有** `auth_request` / 探针。
 
 ## 环境变量
 
@@ -100,7 +101,7 @@ journalctl -u blog-server -n 100 --no-pager
 - **改 `web/` 或 `admin/` 是白费功夫**：它们不部署，改了也不会出现在线上；线上前台/后台分别在 `homepage` 和 `admin-web`。
 - better-sqlite3 是原生模块：升级 Node 主版本后若报 ABI/segfault，重新 `npm rebuild better-sqlite3` 或对齐版本。
 - SQLite 用 WAL 模式，备份要连 `-wal`/`-shm` 一起考虑（或用 `.backup`）。
-- 管理接口的鉴权顺序：nginx 探针注入的 `X-Auth-User` 优先；不要让本地 JWT 校验把探针路径拦掉。
+- 管理接口的鉴权顺序：Auth Gateway 注入的 `X-Auth-User` 优先；不要让本地 JWT 校验把网关路径拦掉。
 
 ## 项目记忆（PROJECT_MEMORY.md）
 
