@@ -1,5 +1,10 @@
-// auth.js —— JWT 签发 / 校验 / 鉴权中间件
-// 密钥从环境变量 JWT_SECRET 读取，未设置时使用默认值 dev-secret
+// auth.js —— 认证模式解析 / JWT 签发校验 / Admin 会话校验 / 鉴权中间件
+//
+// 认证模式（AUTH_MODE，未设置或非法值一律按 builtin）：
+//   builtin —— 自带账号体系：bcrypt 登录 + blog JWT + Redis admin 会话（含 HttpOnly cookie）
+//   sso     —— 关掉自带口令，管理端身份只认前置认证注入的 X-Auth-User
+//
+// 两种模式都保留公开读接口的匿名访问；X-Auth-User 在 builtin 模式下被忽略（不因外部头提权）。
 
 const jwt = require('jsonwebtoken')
 const Redis = require('ioredis')
@@ -8,12 +13,37 @@ const Redis = require('ioredis')
 const SECRET = process.env.JWT_SECRET || 'dev-secret'
 const EXPIRES_IN = '7d'
 
+// ---------- 认证模式解析 ----------
+function normalizeAuthMode(raw) {
+  const value = String(raw == null ? '' : raw).trim().toLowerCase()
+  if (value === 'sso') return 'sso'
+  if (value === 'builtin') return 'builtin'
+  if (value) {
+    console.warn(`[blog] AUTH_MODE 取值非法（${value}），回退 builtin`)
+  }
+  return 'builtin'
+}
+
+const AUTH_MODE = normalizeAuthMode(process.env.AUTH_MODE)
+
+// 启动日志文案（由入口调用，保证只有一处打印）
+function authModeLabel(mode = AUTH_MODE) {
+  return mode === 'sso' ? 'SSO（信任 X-Auth-User）' : '自带账号（builtin）'
+}
+
+function logAuthMode() {
+  console.log(`管理端认证模式: ${authModeLabel()}`)
+}
+
 // 双通道认证中的第二通道：Admin 会话（Redis admin:session:<token>）。
 // 连接 127.0.0.1:6379，key 前缀可用环境变量 ADMIN_REDIS_PREFIX 覆盖，默认 admin:session:
 // （与 admin-server 的会话 key 保持一致，Redis 异常不影响 blog JWT 主通道）
 const ADMIN_REDIS_URL = process.env.ADMIN_REDIS_URL || 'redis://127.0.0.1:6379'
 const ADMIN_SESSION_PREFIX = process.env.ADMIN_REDIS_PREFIX || 'admin:session:'
 const ADMIN_SESSION_TTL = 43200 // 与 admin-server 一致：12 小时，校验通过滑动续期
+
+// 会话 cookie：builtin 模式下登录后下发，RequireAuth 接受它作为 Bearer 的等价凭证
+const ADMIN_SESSION_COOKIE = 'admin_session'
 
 const redis = new Redis(ADMIN_REDIS_URL, {
   maxRetriesPerRequest: 1,
@@ -22,6 +52,11 @@ const redis = new Redis(ADMIN_REDIS_URL, {
 redis.on('error', () => {
   // Redis 仅作第二认证通道，连接失败不退出进程（blog JWT 仍可用）
 })
+
+// 会话前缀列表：支持逗号分隔多前缀（如 'admin:session:,admin:session:test:'）
+function adminSessionPrefixes() {
+  return ADMIN_SESSION_PREFIX.split(',').map((s) => s.trim()).filter(Boolean)
+}
 
 // 签发 token
 function sign(payload) {
@@ -34,10 +69,8 @@ function verify(token) {
 }
 
 // 校验 Admin 会话：token 在任一前缀 key 中存在即视为有效（含滑动续期）
-// 支持逗号分隔多前缀（如 'admin:session:,admin:session:test:'），兼容正式与测试会话
 async function verifyAdminSession(token) {
-  const prefixes = ADMIN_SESSION_PREFIX.split(',').map((s) => s.trim()).filter(Boolean)
-  for (const prefix of prefixes) {
+  for (const prefix of adminSessionPrefixes()) {
     const key = prefix + token
     try {
       const stored = await redis.get(key)
@@ -52,41 +85,126 @@ async function verifyAdminSession(token) {
   return false
 }
 
-// 鉴权中间件：
-//   1. 第一优先：Auth Gateway 注入的 X-Auth-User header（网关已校验登录，内网信任）
-//   2. 回退：双通道校验 blog JWT → Admin 会话（Redis admin:session）——仅旧客户端兼容
-async function requireAuth(req, res, next) {
-  const authUser = req.headers['x-auth-user']
-  if (authUser) {
-    req.user = { username: authUser, via: 'gateway' }
-    return next()
+// 删除 Admin 会话（logout 用）：删除任一前缀下的 key，失败静默（幂等）
+async function destroyAdminSession(token) {
+  if (!token) return
+  for (const prefix of adminSessionPrefixes()) {
+    try {
+      await redis.del(prefix + token)
+    } catch {
+      /* Redis 不可用时忽略：logout 幂等 */
+    }
   }
+}
 
+// ---------- 凭证来源 ----------
+
+// 解析 Cookie 头（不引入额外依赖）
+function parseCookies(cookieHeader) {
+  const out = {}
+  String(cookieHeader || '')
+    .split(';')
+    .forEach((part) => {
+      const idx = part.indexOf('=')
+      if (idx < 0) return
+      const key = part.slice(0, idx).trim()
+      if (key) out[key] = part.slice(idx + 1).trim()
+    })
+  return out
+}
+
+// 取 Authorization: Bearer <token>
+function getBearerToken(req) {
   const header = req.headers.authorization || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  if (!token) {
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+}
+
+// builtin 模式取凭证：Bearer 优先，其次 admin_session cookie
+function getBuiltinToken(req) {
+  return getBearerToken(req) || parseCookies(req.headers.cookie)[ADMIN_SESSION_COOKIE] || ''
+}
+
+// 校验 builtin 凭证：先试图作为 blog JWT，再作为 Redis admin 会话。成功返回有 req.user 形态的对象
+async function verifyBuiltinToken(token) {
+  if (!token) return null
+  try {
+    return { ...verify(token), via: 'jwt' }
+  } catch {
+    /* 非 JWT，继续走 Redis 会话通道 */
+  }
+  try {
+    if (await verifyAdminSession(token)) {
+      return { role: 'admin', via: 'admin-session' }
+    }
+  } catch {
+    /* Redis 不可用：视为未认证 */
+  }
+  return null
+}
+
+// ---------- 鉴权中间件 ----------
+
+// 是否为 HTTPS 请求（cookie Secure 判定；同时兼容反代）
+function isSecureRequest(req) {
+  if (req.secure) return true
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim()
+  return proto === 'https'
+}
+
+// 会话 cookie 选项：Path=/; HttpOnly; SameSite=Lax；HTTPS 下加 Secure
+function sessionCookieOptions(req) {
+  return {
+    httpOnly: true,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: ADMIN_SESSION_TTL * 1000,
+    secure: isSecureRequest(req),
+  }
+}
+
+// 鉴权中间件：
+//   builtin —— 接受 Bearer / admin_session cookie，校验 blog JWT 或 Redis 会话
+//   sso     —— 只认 X-Auth-User（缺失/空 → 401）；不解析 cookie/JWT
+async function requireAuth(req, res, next) {
+  if (AUTH_MODE === 'sso') {
+    const authUser = req.headers['x-auth-user']
+    if (authUser && String(authUser).trim()) {
+      req.user = { username: String(authUser), via: 'gateway' }
+      return next()
+    }
     return res.status(401).json({ message: '未登录，请先登录' })
   }
 
-  // 通道一：blog JWT
-  try {
-    // 校验成功，把用户信息挂载到请求对象上供后续使用
-    req.user = verify(token)
-    return next()
-  } catch (err) {
-    // JWT 无效/过期，继续走第二通道
+  // builtin：忽略 X-Auth-User，只用自带账号凭证
+  const token = getBuiltinToken(req)
+  if (!token) {
+    return res.status(401).json({ message: '未登录，请先登录' })
   }
-
-  // 通道二：Admin 会话（Redis）
-  try {
-    if (await verifyAdminSession(token)) {
-      req.user = { role: 'admin', via: 'admin-session' }
-      return next()
-    }
-  } catch (err) {
-    // Redis 不可用：视为未认证（blog JWT 主通道已失败）
+  const user = await verifyBuiltinToken(token)
+  if (user) {
+    req.user = user
+    return next()
   }
   return res.status(401).json({ message: '登录已过期，请重新登录' })
+}
+
+// 软鉴权中间件：能识别身份就挂 req.user，识别不了也放行（不返回 401）。
+// 用途：公开读接口里夹带「登录态才可见」的内容（如草稿预览）——由路由自己决定 404 还是放行。
+async function optionalAuth(req, res, next) {
+  if (AUTH_MODE === 'sso') {
+    const authUser = req.headers['x-auth-user']
+    if (authUser && String(authUser).trim()) {
+      req.user = { username: String(authUser), via: 'gateway' }
+    }
+    return next()
+  }
+
+  const token = getBuiltinToken(req)
+  if (token) {
+    const user = await verifyBuiltinToken(token)
+    if (user) req.user = user
+  }
+  return next()
 }
 
 // 预览令牌：后台点开「草稿」文章页时用。
@@ -108,36 +226,18 @@ function verifyPreview(token, slug) {
   }
 }
 
-// 软鉴权中间件：能识别身份就挂 req.user，识别不了也放行（不返回 401）。
-// 用途：公开读接口里夹带「登录态才可见」的内容（如草稿预览）——由路由自己决定 404 还是放行。
-async function optionalAuth(req, res, next) {
-  const authUser = req.headers['x-auth-user']
-  if (authUser) {
-    req.user = { username: authUser, via: 'gateway' }
-    return next()
-  }
-
-  const header = req.headers.authorization || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  if (!token) return next()
-
-  // 通道一：blog JWT
-  try {
-    req.user = verify(token)
-    return next()
-  } catch (err) {
-    // 继续尝试第二通道
-  }
-
-  // 通道二：Admin 会话（Redis）
-  try {
-    if (await verifyAdminSession(token)) {
-      req.user = { role: 'admin', via: 'admin-session' }
-    }
-  } catch (err) {
-    /* Redis 不可用：视为匿名 */
-  }
-  return next()
+module.exports = {
+  AUTH_MODE,
+  AUTH_MODE_COOKIE: ADMIN_SESSION_COOKIE,
+  authModeLabel,
+  logAuthMode,
+  sign,
+  verify,
+  verifyAdminSession,
+  destroyAdminSession,
+  sessionCookieOptions,
+  requireAuth,
+  optionalAuth,
+  signPreview,
+  verifyPreview,
 }
-
-module.exports = { sign, verify, requireAuth, optionalAuth, signPreview, verifyPreview }

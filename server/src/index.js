@@ -8,6 +8,7 @@ require('./db')
 
 const postsRouter = require('./routes/posts')
 const authRouter = require('./routes/auth')
+const { logAuthMode } = require('./auth')
 
 const app = express()
 const PORT = process.env.PORT || 4000
@@ -22,7 +23,7 @@ app.use((req, _res, next) => {
 })
 
 // 挂载路由：统一挂在 /api/blog 下（与 admin-server 的 /api/admin 隔离）
-app.use('/api/blog', authRouter)  // POST /api/blog/admin/login
+app.use('/api/blog', authRouter)  // /api/blog/auth-mode、/api/blog/admin/login|logout|me
 app.use('/api/blog', postsRouter) // /api/blog/posts、/api/blog/admin/posts ...
 
 // 404 兜底：未匹配到任何路由
@@ -38,5 +39,7 @@ app.use((err, req, res, next) => {
 
 // 启动服务（仅绑定 127.0.0.1：nginx 反代可达，杜绝公网直连伪造 X-Auth-User 绕过 SSO）
 app.listen(PORT, '127.0.0.1', () => {
+  // 启动日志：明确打印当前管理端认证模式
+  logAuthMode()
   console.log(`博客 API 服务已启动：http://localhost:${PORT}`)
 })
