@@ -6,6 +6,7 @@ const fs = require('fs')
 const path = require('path')
 const Database = require('better-sqlite3')
 const bcrypt = require('bcryptjs')
+const crypto = require('crypto')
 const { nextIdAt } = require('./snowflake')
 
 // 数据库文件路径，可通过环境变量 DB_PATH 覆盖
@@ -151,13 +152,31 @@ function listTags() {
 
 // ---------- 种子数据 ----------
 
-// 如果没有管理员账号，则创建默认账号 admin / admin123
+// 如果没有管理员账号，则创建初始管理员账号。
+// 口令优先取 BLOG_ADMIN_PASSWORD；未设置则随机生成 16 位并只打印这一次
+// （公开仓库不能内置固定默认口令：默认开启认证 + 固定口令 = 部署到公网即被登录）。
 function seedUsers() {
   const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get()
   if (n > 0) return
-  const hash = bcrypt.hashSync('admin123', 10)
-  db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run('admin', hash)
-  console.log('[db] 已创建默认管理员账号：admin / admin123')
+
+  const username = (process.env.BLOG_ADMIN_USER || 'admin').trim() || 'admin'
+  const fromEnv = (process.env.BLOG_ADMIN_PASSWORD || '').trim()
+  const password = fromEnv || crypto.randomBytes(12).toString('base64url').slice(0, 16)
+
+  db.prepare('INSERT INTO users (username, password) VALUES (?, ?)').run(
+    username,
+    bcrypt.hashSync(password, 10)
+  )
+
+  if (fromEnv) {
+    console.log(`[db] 已按 BLOG_ADMIN_PASSWORD 创建管理员账号：${username}`)
+  } else {
+    console.log('[db] ==========================================================')
+    console.log(`[db] 已创建初始管理员账号：${username} / ${password}`)
+    console.log('[db] 该口令只打印这一次，请立即保存并在后台修改；')
+    console.log('[db] 如需自定义，可在首次启动前设置 BLOG_ADMIN_PASSWORD。')
+    console.log('[db] ==========================================================')
+  }
 }
 
 // 示例文章（首次启动时插入）

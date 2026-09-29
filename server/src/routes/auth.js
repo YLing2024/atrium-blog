@@ -12,7 +12,9 @@ const {
   AUTH_MODE,
   AUTH_MODE_COOKIE,
   sign,
+  setAdminSession,
   destroyAdminSession,
+  getBuiltinToken,
   sessionCookieOptions,
   requireAuth,
 } = require('../auth')
@@ -33,7 +35,7 @@ router.get('/auth-mode', (req, res) => {
 })
 
 // POST /api/blog/admin/login：成功后返回 { token, username, message }，并下发 HttpOnly 会话 cookie
-router.post('/admin/login', builtinOnly, (req, res) => {
+router.post('/admin/login', builtinOnly, async (req, res) => {
   const { username, password } = req.body || {}
 
   // 基础参数校验
@@ -51,15 +53,17 @@ router.post('/admin/login', builtinOnly, (req, res) => {
 
   // 签发 7 天有效的 JWT，并写入会话 cookie（Path=/; HttpOnly; SameSite=Lax；HTTPS 加 Secure）
   const token = sign({ id: user.id, username: user.username })
+  // 同时在 Redis 注册会话（key 与 admin-server 一致），登出才能立即失效；Redis 不可用时降级为纯 JWT
+  await setAdminSession(token)
   res.cookie(AUTH_MODE_COOKIE, token, sessionCookieOptions(req))
   res.json({ token, username: user.username, message: '登录成功' })
 })
 
 // POST /api/blog/admin/logout：删 Redis 会话 + 清 cookie；未登录也 200（幂等）
 router.post('/admin/logout', builtinOnly, async (req, res) => {
-  const header = req.headers.authorization || ''
-  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  await destroyAdminSession(bearer)
+  // 凭证来源必须与 requireAuth 一致（Bearer 优先，其次 cookie）——
+  // 只取 Authorization 头时，浏览器用 cookie 登录则登出删不到任何东西，旧会话仍然有效。
+  await destroyAdminSession(getBuiltinToken(req))
   res.clearCookie(AUTH_MODE_COOKIE, sessionCookieOptions(req))
   res.json({ ok: true, message: '已退出登录' })
 })

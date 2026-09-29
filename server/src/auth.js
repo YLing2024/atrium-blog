@@ -85,6 +85,38 @@ async function verifyAdminSession(token) {
   return false
 }
 
+// 写入 Admin 会话（登录用）：key = 前缀 + token，值为 token 本身，TTL 与滑动续期一致。
+// Redis 不可用时失败静默 —— 此时退回纯 JWT（见 verifyBuiltinToken 的降级分支）。
+async function setAdminSession(token) {
+  if (!token) return false
+  const prefixes = adminSessionPrefixes()
+  try {
+    await redis.set(prefixes[0] + token, token, 'EX', ADMIN_SESSION_TTL)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// 查询会话状态：'valid' 会话存在 / 'missing' Redis 可达但没有该会话 / 'unavailable' Redis 不可用。
+// 必须区分后两者：只按「JWT 有效」放行会让 logout 形同虚设（删了会话，旧 JWT 照样能用）。
+async function redisSessionState(token) {
+  if (!token) return 'missing'
+  let sawError = false
+  for (const prefix of adminSessionPrefixes()) {
+    try {
+      const stored = await redis.get(prefix + token)
+      if (stored && stored === token) {
+        await redis.expire(prefix + token, ADMIN_SESSION_TTL)
+        return 'valid'
+      }
+    } catch {
+      sawError = true
+    }
+  }
+  return sawError ? 'unavailable' : 'missing'
+}
+
 // 删除 Admin 会话（logout 用）：删除任一前缀下的 key，失败静默（幂等）
 async function destroyAdminSession(token) {
   if (!token) return
@@ -127,17 +159,21 @@ function getBuiltinToken(req) {
 // 校验 builtin 凭证：先试图作为 blog JWT，再作为 Redis admin 会话。成功返回有 req.user 形态的对象
 async function verifyBuiltinToken(token) {
   if (!token) return null
+
+  let jwtUser = null
   try {
-    return { ...verify(token), via: 'jwt' }
+    jwtUser = verify(token)
   } catch {
-    /* 非 JWT，继续走 Redis 会话通道 */
+    /* 非 JWT 或已过期：继续看 Redis 会话通道 */
   }
-  try {
-    if (await verifyAdminSession(token)) {
-      return { role: 'admin', via: 'admin-session' }
-    }
-  } catch {
-    /* Redis 不可用：视为未认证 */
+
+  const state = await redisSessionState(token)
+  if (state === 'valid') {
+    return { ...(jwtUser || { role: 'admin' }), via: jwtUser ? 'jwt+session' : 'admin-session' }
+  }
+  if (state === 'unavailable' && jwtUser) {
+    // Redis 不可用时的降级：退回纯 JWT（此时无法做到登出即失效，属已知取舍）
+    return { ...jwtUser, via: 'jwt-redis-down' }
   }
   return null
 }
@@ -234,7 +270,9 @@ module.exports = {
   sign,
   verify,
   verifyAdminSession,
+  setAdminSession,
   destroyAdminSession,
+  getBuiltinToken,
   sessionCookieOptions,
   requireAuth,
   optionalAuth,
