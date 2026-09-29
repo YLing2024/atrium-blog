@@ -54,14 +54,20 @@ server/
 
 ## 鉴权
 
-1. **主路径**：`/api/blog/admin/*` 由 **Auth Gateway**（`127.0.0.1:18920`，nginx 反代进来）鉴权后反代，网关注入 `X-Auth-User`；`requireAuth` 优先信任该头，不依赖业务站自己签发的凭证。
-2. **本地兼容通道（代码保留未删）**：blog JWT（`JWT_SECRET` 签发，7 天有效）与 Redis admin 会话（`admin:session:<token>`，12h 滑动续期，与 admin-server 共 key 空间，Redis 挂了不影响 JWT）。生产前端已不再使用，仅供旧客户端/脚本兼容。
-3. nginx 层：`/api/blog/*` 公开读放行；`/api/blog/admin/*` 交给 Auth Gateway 鉴权。配置里**不再有** `auth_request` / 探针。
+认证模式由环境变量 `AUTH_MODE` 决定，**未设置 / 非法值一律回退 `builtin`（仓库 public，默认必须是自带账号）**；启动时 stdout 打印一行 `管理端认证模式: …`。
+
+1. **`builtin`（默认）**：自带账号体系完整可用——`bcrypt` 用户名+口令登录（`POST /api/blog/admin/login`）后同时返回 JWT 字段并下发 HttpOnly 会话 cookie `admin_session`（`Path=/; HttpOnly; SameSite=Lax`，HTTPS 下加 `Secure`，`Max-Age` = 会话 TTL）。`requireAuth` 接受 `Authorization: Bearer <token>` 或 cookie `admin_session`，校验 blog JWT 或 Redis `admin:session:<token>`（沿用多前缀支持）。此模式下 `X-Auth-User` 被**忽略**，不因外部头提权。
+2. **`sso`**：关掉自带口令，`requireAuth` **只认** Auth Gateway 注入的 `X-Auth-User`（缺失/空 → `401 JSON`）；**禁止**解析 cookie/JWT/上游凭证，禁止自行实现 OIDC 跳转。`admin/login|logout|me` 一律 `404`。
+3. 两条兼容通道（blog JWT 与 Redis admin 会话）在两种模式下代码都保留，但仅作为 `builtin` 的凭证来源；`sso` 不因它们的缺失而拒绝请求。
+4. 新增免鉴权接口 `GET /api/blog/auth-mode` → `200 {"authMode":"builtin"|"sso"}`，不含其它信息；`POST /api/blog/admin/logout`（删会话+清 cookie，幂等）、`GET /api/blog/admin/me` → `{name, role}`（未登录 `401`）。
+5. 公开读接口（`/api/blog/posts`、`/collections`、`/uploads/:name`）任何时候都不加鉴权。
+6. nginx 层：`/api/blog/*` 公开读放行；`/api/blog/admin/*` 交给 Auth Gateway 鉴权。配置里**不再有** `auth_request` / 探针。生产实例须在 `.env` 显式 `AUTH_MODE=sso`，否则网关注入的头会被 builtin 忽略、管理接口不可用。
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
+| `AUTH_MODE` | `builtin` | 管理端认证模式；`builtin`（自带账号）/ `sso`（只认 `X-Auth-User`）；非法值回退 `builtin` |
 | `PORT` | `4000` | systemd 设置 |
 | `JWT_SECRET` | `dev-secret` | 生产必须显式设置 |
 | `DB_PATH` | `server/data/blog.db` | SQLite 文件 |

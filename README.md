@@ -78,6 +78,26 @@ npm run dev        # http://localhost:5174
 
 首次启动时后端会自动创建该管理员账号，密码使用 bcrypt 哈希存储。
 
+## 管理端认证
+
+默认自带账号口令，开箱即用；也可以关掉自带口令。
+
+| 模式 | 说明 |
+| ---- | ---- |
+| `builtin` | 默认。自带账号 + 登录页 |
+| `sso` | 关掉自带口令，管理端身份由 `X-Auth-User` 决定——自家项目接 SSO 时走这一档 |
+
+关掉后的登录跳转与 401 由你前面的认证层决定，本服务不再展开。
+
+（可选）管理接口一览：
+
+| 方法 | 路径 | 说明 |
+| ---- | ---- | ---- |
+| GET  | `/api/blog/auth-mode` | 当前认证模式（免鉴权） |
+| POST | `/api/blog/admin/login` | 登录（`sso` 模式返回 404） |
+| POST | `/api/blog/admin/logout` | 退出，幂等（`sso` 模式返回 404） |
+| GET  | `/api/blog/admin/me` | 当前身份（`sso` 模式返回 404） |
+
 ## 接口说明
 
 | 方法   | 路径                 | 鉴权   | 说明                         |
@@ -94,6 +114,7 @@ npm run dev        # http://localhost:5174
 
 | 变量        | 默认值       | 说明                 |
 | ----------- | ------------ | -------------------- |
+| `AUTH_MODE` | `builtin`    | 管理端认证模式：`builtin` / `sso` |
 | `JWT_SECRET`| `dev-secret` | JWT 签名密钥         |
 | `DB_PATH`   | `server/data/blog.db` | SQLite 数据库文件路径 |
 | `PORT`      | `4000`       | 后端服务端口         |
