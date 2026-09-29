@@ -64,13 +64,13 @@ const PAGE_SIZE = 10
 
 // 文章查询字段：附带合集信息（LEFT JOIN collections，别名避免列名冲突）
 const POST_COLS = `
-  p.id, p.title, p.slug, p.public_id, p.content, p.excerpt, p.tags, p.published,
+  p.id, p.title, p.subtitle, p.slug, p.public_id, p.content, p.excerpt, p.tags, p.published,
   p.created_at, p.updated_at,
   c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug,
   c.public_id AS collection_public_id
 `
 const POST_COLS_NO_CONTENT = `
-  p.id, p.title, p.slug, p.public_id, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
+  p.id, p.title, p.subtitle, p.slug, p.public_id, p.excerpt, p.tags, p.published, p.created_at, p.updated_at,
   c.id AS collection_id, c.name AS collection_name, c.slug AS collection_slug,
   c.public_id AS collection_public_id
 `
@@ -109,6 +109,7 @@ function toPost(row) {
   const { collection_id, collection_name, collection_slug, collection_public_id, ...rest } = row
   return {
     ...rest,
+    subtitle: row.subtitle || '',
     published: !!row.published,
     tags: parseTags(row.tags),
     collection:
