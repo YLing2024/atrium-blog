@@ -67,6 +67,7 @@ server/
 | `DB_PATH` | `server/data/blog.db` | SQLite 文件 |
 | `ADMIN_REDIS_URL` / `ADMIN_REDIS_PREFIX` | `redis://127.0.0.1:6379` / `admin:session:` | 支持逗号分隔多前缀（正式+测试） |
 | `PREVIEW_TTL` | 见代码 | 草稿预览链接有效期 |
+| `PUBLIC_SITE_URL` | 空（回退相对路径并 warn） | 公共站点基址（含协议）；preview-link 用它拼绝对地址，未配置时回退相对路径 |
 | `SNOWFLAKE_WORKER_ID` | `0` | 多实例部署时才需区分 |
 
 ## 命令
@@ -102,6 +103,7 @@ journalctl -u blog-server -n 100 --no-pager
 - better-sqlite3 是原生模块：升级 Node 主版本后若报 ABI/segfault，重新 `npm rebuild better-sqlite3` 或对齐版本。
 - SQLite 用 WAL 模式，备份要连 `-wal`/`-shm` 一起考虑（或用 `.backup`）。
 - 管理接口的鉴权顺序：Auth Gateway 注入的 `X-Auth-User` 优先；不要让本地 JWT 校验把网关路径拦掉。
+- **后台在独立子域，任何指向公共站点（博客前台）的链接都必须是绝对地址，基址走 `PUBLIC_SITE_URL` 可配置，不得写死域名。** 相对路径 `/blog/<id>` 在子域后台会被当成后台自身路径打开，落到后台 SPA（打不开文章）。`admin-server` 的分享链接 `shareBaseUrl()` 按 `x-forwarded-host` 推导是另一套、正确的设计，别去"统一"它。
 
 ## 项目记忆（PROJECT_MEMORY.md）
 
