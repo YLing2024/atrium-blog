@@ -47,6 +47,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS posts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     title      TEXT NOT NULL,
+    subtitle   TEXT NOT NULL DEFAULT '',
     slug       TEXT NOT NULL UNIQUE,
     public_id  TEXT,
     content    TEXT NOT NULL DEFAULT '',
@@ -74,6 +75,13 @@ if (!postCols.some((c) => c.name === 'collection_id')) {
     'ALTER TABLE posts ADD COLUMN collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL'
   )
   console.log('[db] posts 表已新增 collection_id 列')
+}
+
+// 旧库 posts 表补 subtitle（副标题）：独立数据字段，前台直接渲染，不复用 excerpt。
+// 幂等：仅当列缺失时 ALTER，重复启动不会重复添加、不影响已有数据
+if (!postCols.some((c) => c.name === 'subtitle')) {
+  db.exec("ALTER TABLE posts ADD COLUMN subtitle TEXT NOT NULL DEFAULT ''")
+  console.log('[db] posts 表已新增 subtitle 列')
 }
 
 // 旧库补 public_id（雪花 ID：posts 文章、collections 合集的 URL 标识），并为历史数据回填。
