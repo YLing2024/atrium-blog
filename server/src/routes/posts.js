@@ -92,6 +92,12 @@ function slugify(text, fallback = 'post') {
   return slug || `${fallback}-${Date.now()}`
 }
 
+// 副标题：独立数据字段（不同于 excerpt 摘要）。去首尾空白，上限 200 字符，超长截断
+const SUBTITLE_MAX = 200
+function normalizeSubtitle(value) {
+  return String(value || '').trim().slice(0, SUBTITLE_MAX)
+}
+
 // 校验并解析 collection_id（空/null 视为不关联合集，返回 null）
 // 返回 null 表示无合集；返回 undefined 表示参数未提供（用于区分"不改动"）
 function parseCollectionId(collectionId) {
@@ -287,7 +293,7 @@ router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
 
 // POST /api/admin/posts 新建文章
 router.post('/admin/posts', requireAuth, (req, res) => {
-  const { title, slug, content = '', excerpt = '', tags, published, collection_id } =
+  const { title, slug, content = '', excerpt = '', subtitle = '', tags, published, collection_id } =
     req.body || {}
 
   // 标题必填
@@ -309,8 +315,8 @@ router.post('/admin/posts', requireAuth, (req, res) => {
 
   const result = db
     .prepare(
-      `INSERT INTO posts (title, slug, public_id, content, excerpt, tags, published, collection_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO posts (title, slug, public_id, content, excerpt, subtitle, tags, published, collection_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       title.trim(),
@@ -318,6 +324,7 @@ router.post('/admin/posts', requireAuth, (req, res) => {
       publicId,
       content,
       excerpt.trim(),
+      normalizeSubtitle(subtitle),
       tagList.join(','),
       publishedValue,
       collectionId
@@ -340,7 +347,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     return res.status(404).json({ message: '文章不存在' })
   }
 
-  const { title, slug, content, excerpt, tags, published, collection_id } = req.body || {}
+  const { title, slug, content, excerpt, subtitle, tags, published, collection_id } = req.body || {}
   const tagList = Array.isArray(tags) ? tags : parseTags(tags ?? post.tags)
   const publishedValue =
     published === undefined ? post.published : published ? 1 : 0
@@ -359,7 +366,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
 
   db.prepare(
     `UPDATE posts
-     SET title = ?, slug = ?, content = ?, excerpt = ?, tags = ?, published = ?,
+     SET title = ?, slug = ?, content = ?, excerpt = ?, subtitle = ?, tags = ?, published = ?,
          collection_id = ?, updated_at = datetime('now', 'localtime')
      WHERE id = ?`
   ).run(
@@ -367,6 +374,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
     slugValue,
     content ?? post.content,
     (excerpt ?? post.excerpt).trim(),
+    subtitle === undefined ? post.subtitle : normalizeSubtitle(subtitle),
     tagList.join(','),
     publishedValue,
     collectionId,
