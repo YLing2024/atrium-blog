@@ -18,6 +18,18 @@ const { nextId } = require('../snowflake')
 
 const router = express.Router()
 
+// 公共站点基址：运行期注入；未配置时回退相对路径并显式告警（不静默给出错链接）
+// 后台在独立子域上打开 preview-link，相对路径会落到后台自身 SPA，故必须用绝对地址
+const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '')
+let warnedMissingSiteUrl = false
+function publicSiteUrl() {
+  if (!PUBLIC_SITE_URL && !warnedMissingSiteUrl) {
+    warnedMissingSiteUrl = true
+    console.warn('[blog] PUBLIC_SITE_URL 未配置，preview-link 将返回相对地址（后台点在子域上会打不开）')
+  }
+  return PUBLIC_SITE_URL
+}
+
 // ---- 博客图片上传（管理接口）：存 uploads/，公开访问 /api/blog/uploads/<name> ----
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads')
 fs.mkdirSync(UPLOAD_DIR, { recursive: true })
@@ -263,7 +275,8 @@ router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
     return res.status(404).json({ message: '文章不存在' })
   }
   // URL 用雪花 ID；老文章万一没回填成功则退回 slug，保证链接永远可用
-  const base = `/blog/${post.public_id || post.slug}`
+  // 基址走 PUBLIC_SITE_URL（公共站点绝对地址）；未配置时回退相对路径
+  const base = `${publicSiteUrl()}/blog/${post.public_id || post.slug}`
   const key = post.public_id || post.slug
   res.json({
     published: !!post.published,
