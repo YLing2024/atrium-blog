@@ -198,6 +198,14 @@ function sessionCookieOptions(req) {
   }
 }
 
+// 清除会话 cookie 的选项：与下发时同样式，但不带 maxAge。
+// clearCookie 传 maxAge 在 Express 4/5 上都会打废弃警告（且 v5 起被忽略），
+// 而清除语义本来就该由 Expires 在过去承担 —— 这里显式去掉，避免每次登出都往日志吐警告。
+function clearSessionCookieOptions(req) {
+  const { maxAge, ...rest } = sessionCookieOptions(req)
+  return rest
+}
+
 // 鉴权中间件：
 //   builtin —— 接受 Bearer / admin_session cookie，校验 blog JWT 或 Redis 会话
 //   sso     —— 只认 X-Auth-User（缺失/空 → 401）；不解析 cookie/JWT
@@ -274,6 +282,7 @@ module.exports = {
   destroyAdminSession,
   getBuiltinToken,
   sessionCookieOptions,
+  clearSessionCookieOptions,
   requireAuth,
   optionalAuth,
   signPreview,

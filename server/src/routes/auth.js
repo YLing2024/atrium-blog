@@ -16,6 +16,7 @@ const {
   destroyAdminSession,
   getBuiltinToken,
   sessionCookieOptions,
+  clearSessionCookieOptions,
   requireAuth,
 } = require('../auth')
 
@@ -64,7 +65,7 @@ router.post('/admin/logout', builtinOnly, async (req, res) => {
   // 凭证来源必须与 requireAuth 一致（Bearer 优先，其次 cookie）——
   // 只取 Authorization 头时，浏览器用 cookie 登录则登出删不到任何东西，旧会话仍然有效。
   await destroyAdminSession(getBuiltinToken(req))
-  res.clearCookie(AUTH_MODE_COOKIE, sessionCookieOptions(req))
+  res.clearCookie(AUTH_MODE_COOKIE, clearSessionCookieOptions(req))
   res.json({ ok: true, message: '已退出登录' })
 })
 
