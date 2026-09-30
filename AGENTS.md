@@ -20,20 +20,20 @@
 - **better-sqlite3 13.x**（注意：这是原生模块，Node 大版本升级后必须重装/重编译；曾因 11.x 在 Node 24 上原生崩溃而升到 13.0.3）
 - `jsonwebtoken`（本地兼容通道：管理接口 JWT）、`ioredis`（本地兼容通道：admin 会话）、`multer`（图片上传）
   —— 生产管理接口主鉴权已由 Auth Gateway 负责（网关注入 `X-Auth-User`），这两条通道保留兼容
-- **雪花 ID**（`src/snowflake.js`）：文章/合集对外标识用 19 位字符串 ID，防枚举、时间有序
+- **雪花 ID**（`src/snowflake.ts`）：文章/合集对外标识用 19 位字符串 ID，防枚举、时间有序
 
 ## 目录结构（server）
 
 ```
 server/
 ├── src/
-│   ├── index.js        # 入口，挂载 /api/blog，监听 127.0.0.1:4000
-│   ├── db.js           # SQLite 初始化 + 建表（collections / users / posts / tags）
-│   ├── auth.js         # JWT 签发/校验 + Redis admin 会话第二通道
-│   ├── snowflake.js    # 雪花 ID（返回字符串，防止 Number 精度丢失）
+│   ├── index.ts        # 入口，挂载 /api/blog，监听 127.0.0.1:4000
+│   ├── db.ts           # SQLite 初始化 + 建表（collections / users / posts / tags）
+│   ├── auth.ts         # JWT 签发/校验 + Redis admin 会话第二通道
+│   ├── snowflake.ts    # 雪花 ID（返回字符串，防止 Number 精度丢失）
 │   └── routes/
-│       ├── auth.js     # POST /admin/login
-│       └── posts.js    # 公开读 + 管理写（CRUD、合集、上传、预览链接）
+│       ├── auth.ts     # POST /admin/login
+│       └── posts.ts    # 公开读 + 管理写（CRUD、合集、上传、预览链接）
 ├── data/blog.db        # SQLite（+ -wal/-shm），不入库
 └── uploads/            # 上传图片，不入库
 ```
@@ -81,14 +81,14 @@ server/
 ```bash
 cd server
 npm install
-npm start          # node src/index.js
+npm start          # node src/index.ts（Node 原生类型剥离，零构建）
 npm run dev        # node --watch
 
 systemctl restart blog-server
 journalctl -u blog-server -n 100 --no-pager
 ```
 
-无测试、无 lint、无构建步骤（`web/`、`admin/` 各自有 `npm run dev/build`，但它们是停用的）。
+校验：`npm run typecheck`（`tsc --noEmit`）、`npm run lint`（ESLint 正确性规则）、`npm test`（Node 内置 `node:test`，零框架）；`npm run check` 三者串跑。**无需构建步骤**——Node 24 原生剥离类型，直接 `node src/index.ts`（`web/`、`admin/` 是已停用的旧前端，不参与）。
 
 ## 数据与 ID 约定
 
