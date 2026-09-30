@@ -1,23 +1,32 @@
-// db.js —— SQLite 数据库初始化与种子数据
+// db.ts —— SQLite 数据库初始化与种子数据
 // 使用 better-sqlite3，数据库文件默认存放在 server/data/blog.db
 // 首次启动自动建表（users / posts / tags），并插入默认管理员账号与 3 篇示例文章
 
-const fs = require('fs')
-const path = require('path')
-const Database = require('better-sqlite3')
-const bcrypt = require('bcryptjs')
-const crypto = require('crypto')
-const { nextIdAt } = require('./snowflake')
+// 仅用于把本文件标记为 TS 模块（Node 运行时会擦除类型导入）；运行时仍是 require / module.exports
+import type {} from 'node:process'
+
+type SqliteDatabase = import('better-sqlite3').Database
+// PRAGMA table_info 返回的列描述行
+type TableColumn = { name: string }
+
+const fs = require('fs') as typeof import('fs')
+const path = require('path') as typeof import('path')
+const Database = require('better-sqlite3') as { new (filename: string): SqliteDatabase }
+const bcrypt = require('bcryptjs') as {
+  hashSync: typeof import('bcryptjs').hashSync
+}
+const crypto = require('crypto') as typeof import('crypto')
+const { nextIdAt } = require('./snowflake.ts') as { nextIdAt: (msInput: number) => string }
 
 // 数据库文件路径，可通过环境变量 DB_PATH 覆盖
-const DB_PATH =
+const DB_PATH: string =
   process.env.DB_PATH || path.join(__dirname, '..', 'data', 'blog.db')
 
 // 确保数据库所在目录存在
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
 
 // 打开数据库（better-sqlite3 是同步 API）
-const db = new Database(DB_PATH)
+const db: SqliteDatabase = new Database(DB_PATH)
 
 // 基础配置：WAL 提升并发读写性能；开启外键约束
 db.pragma('journal_mode = WAL')
@@ -70,7 +79,7 @@ db.exec(`
 // ---------- 迁移：兼容已有数据库 ----------
 // 旧版 posts 表没有 collection_id 列，检测到缺失时通过 ALTER TABLE 补充
 // （collections 表必须已存在，故放在建表语句之后执行）
-const postCols = db.prepare('PRAGMA table_info(posts)').all()
+const postCols = db.prepare('PRAGMA table_info(posts)').all() as TableColumn[]
 if (!postCols.some((c) => c.name === 'collection_id')) {
   db.exec(
     'ALTER TABLE posts ADD COLUMN collection_id INTEGER REFERENCES collections(id) ON DELETE SET NULL'
@@ -87,15 +96,15 @@ if (!postCols.some((c) => c.name === 'subtitle')) {
 
 // 旧库补 public_id（雪花 ID：posts 文章、collections 合集的 URL 标识），并为历史数据回填。
 // 回填用 created_at 作为时间源，让老数据的 ID 大致反映其创建时间；同毫秒内靠序列位区分。
-function ensurePublicId(table) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all()
+function ensurePublicId(table: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as TableColumn[]
   if (!cols.some((c) => c.name === 'public_id')) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN public_id TEXT`)
     console.log(`[db] ${table} 表已新增 public_id 列`)
   }
   const pending = db
     .prepare(`SELECT id, created_at FROM ${table} WHERE public_id IS NULL OR public_id = '' ORDER BY id`)
-    .all()
+    .all() as Array<{ id: number; created_at: string | null }>
   if (pending.length) {
     const upd = db.prepare(`UPDATE ${table} SET public_id = ? WHERE id = ?`)
     db.transaction(() => {
@@ -115,8 +124,8 @@ ensurePublicId('collections')
 // ---------- 标签辅助函数 ----------
 
 // 把逗号分隔的标签字符串解析成数组（自动去空与去重）
-function parseTags(tags = '') {
-  const seen = new Set()
+function parseTags(tags: unknown = ''): string[] {
+  const seen = new Set<string>()
   return String(tags)
     .split(',')
     .map((t) => t.trim())
@@ -125,9 +134,9 @@ function parseTags(tags = '') {
 }
 
 // 根据 posts 表的数据重建 tags 表（增删改文章后调用，简单可靠）
-function rebuildTags() {
-  const rows = db.prepare('SELECT tags FROM posts').all()
-  const counter = {}
+function rebuildTags(): void {
+  const rows = db.prepare('SELECT tags FROM posts').all() as Array<{ tags: string }>
+  const counter: Record<string, number> = {}
   for (const row of rows) {
     for (const name of parseTags(row.tags)) {
       counter[name] = (counter[name] || 0) + 1
@@ -144,10 +153,10 @@ function rebuildTags() {
 }
 
 // 查询所有标签及对应的文章数量（按文章数降序）
-function listTags() {
+function listTags(): Array<{ name: string; post_count: number }> {
   return db
     .prepare('SELECT name, post_count FROM tags ORDER BY post_count DESC, name ASC')
-    .all()
+    .all() as Array<{ name: string; post_count: number }>
 }
 
 // ---------- 种子数据 ----------
@@ -155,8 +164,8 @@ function listTags() {
 // 如果没有管理员账号，则创建初始管理员账号。
 // 口令优先取 BLOG_ADMIN_PASSWORD；未设置则随机生成 16 位并只打印这一次
 // （公开仓库不能内置固定默认口令：默认开启认证 + 固定口令 = 部署到公网即被登录）。
-function seedUsers() {
-  const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get()
+function seedUsers(): void {
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM users').get() as { n: number }
   if (n > 0) return
 
   const username = (process.env.BLOG_ADMIN_USER || 'admin').trim() || 'admin'
@@ -286,8 +295,8 @@ img.addEventListener('load', () => {
 ]
 
 // 如果文章表为空，则插入示例文章
-function seedPosts() {
-  const { n } = db.prepare('SELECT COUNT(*) AS n FROM posts').get()
+function seedPosts(): void {
+  const { n } = db.prepare('SELECT COUNT(*) AS n FROM posts').get() as { n: number }
   if (n > 0) return
   const insert = db.prepare(
     `INSERT INTO posts (title, slug, content, excerpt, tags, published)

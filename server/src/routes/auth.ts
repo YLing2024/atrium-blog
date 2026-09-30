@@ -1,13 +1,19 @@
-// routes/auth.js —— 管理端认证接口（builtin 模式）
+// routes/auth.ts —— 管理端认证接口（builtin 模式）
 //   GET  /api/blog/auth-mode     当前认证模式（免鉴权、两种模式都可用）
 //   POST /api/blog/admin/login   校验账号密码，签发 JWT 并下发会话 cookie（仅 builtin）
 //   POST /api/blog/admin/logout  删除会话 + 清 cookie，幂等（仅 builtin）
 //   GET  /api/blog/admin/me      当前登录身份（仅 builtin）
 // sso 模式下 admin/login、admin/logout、admin/me 一律 404（身份由 X-Auth-User 决定）。
 
-const express = require('express')
-const bcrypt = require('bcryptjs')
-const { db } = require('../db')
+import type { Request, Response, NextFunction, CookieOptions } from 'express'
+
+type SqliteDatabase = import('better-sqlite3').Database
+
+const express = require('express') as typeof import('express')
+const bcrypt = require('bcryptjs') as {
+  compareSync: typeof import('bcryptjs').compareSync
+}
+const { db } = require('../db.ts') as { db: SqliteDatabase }
 const {
   AUTH_MODE,
   AUTH_MODE_COOKIE,
@@ -18,12 +24,22 @@ const {
   sessionCookieOptions,
   clearSessionCookieOptions,
   requireAuth,
-} = require('../auth')
+} = require('../auth.ts') as {
+  AUTH_MODE: 'builtin' | 'sso'
+  AUTH_MODE_COOKIE: string
+  sign: (payload: object) => string
+  setAdminSession: (token: string) => Promise<boolean>
+  destroyAdminSession: (token: string) => Promise<void>
+  getBuiltinToken: (req: Request) => string
+  sessionCookieOptions: (req: Request) => CookieOptions
+  clearSessionCookieOptions: (req: Request) => CookieOptions
+  requireAuth: (req: Request, res: Response, next: NextFunction) => unknown
+}
 
 const router = express.Router()
 
 // sso 模式下自带账号接口一律 404（与未实现路由表现一致，不泄露模式细节外的信息）
-function builtinOnly(req, res, next) {
+function builtinOnly(req: Request, res: Response, next: NextFunction) {
   if (AUTH_MODE === 'sso') {
     return res.status(404).json({ message: '接口不存在' })
   }
@@ -37,7 +53,7 @@ router.get('/auth-mode', (req, res) => {
 
 // POST /api/blog/admin/login：成功后返回 { token, username, message }，并下发 HttpOnly 会话 cookie
 router.post('/admin/login', builtinOnly, async (req, res) => {
-  const { username, password } = req.body || {}
+  const { username, password } = (req.body || {}) as { username?: string; password?: string }
 
   // 基础参数校验
   if (!username || !password) {
@@ -47,7 +63,9 @@ router.post('/admin/login', builtinOnly, async (req, res) => {
   // 查询用户并比对 bcrypt 密码哈希
   const user = db
     .prepare('SELECT * FROM users WHERE username = ?')
-    .get(String(username).trim())
+    .get(String(username).trim()) as
+    | { id: number; username: string; password: string }
+    | undefined
   if (!user || !bcrypt.compareSync(String(password), user.password)) {
     return res.status(401).json({ message: '账号或密码错误' })
   }

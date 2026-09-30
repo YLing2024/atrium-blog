@@ -1,4 +1,4 @@
-// routes/posts.js —— 文章相关路由
+// routes/posts.ts —— 文章相关路由
 // 公开接口（无需鉴权）：
 //   GET /api/posts          文章列表（仅已发布，支持 ?page= & tag=）
 //   GET /api/posts/:slug    文章详情（已发布公开；草稿仅登录态可见，供后台点标题预览）
@@ -8,13 +8,67 @@
 //   PUT    /api/admin/posts/:id    更新文章
 //   DELETE /api/admin/posts/:id    删除文章
 
-const express = require('express')
-const path = require('path')
-const fs = require('fs')
-const multer = require('multer')
-const { db, parseTags, rebuildTags } = require('../db')
-const { requireAuth, optionalAuth, signPreview, verifyPreview } = require('../auth')
-const { nextId } = require('../snowflake')
+import type { NextFunction, Request, Response } from 'express'
+
+type SqliteDatabase = import('better-sqlite3').Database
+// 文章行（POST_COLS / SELECT * 的形态；未知额外列用索引签名兜住）
+type PostRow = {
+  id: number
+  title: string
+  subtitle: string
+  slug: string
+  public_id: string | null
+  content: string
+  excerpt: string
+  tags: string
+  published: number
+  created_at: string
+  updated_at: string
+  collection_id: number | null
+  collection_name?: string | null
+  collection_slug?: string | null
+  collection_public_id?: string | null
+  [key: string]: unknown
+}
+// 合集行
+type CollectionRow = {
+  id: number
+  name: string
+  slug: string
+  public_id: string | null
+  description: string | null
+  created_at: string
+  [key: string]: unknown
+}
+// 请求体（写接口）：字段缺失语义由各路由自行判断
+type PostBody = {
+  title?: string
+  slug?: string
+  content?: string
+  excerpt?: string
+  subtitle?: string
+  tags?: string | string[]
+  published?: unknown
+  collection_id?: unknown
+}
+type CollectionBody = { name?: string; slug?: string; description?: string }
+
+const express = require('express') as typeof import('express')
+const path = require('path') as typeof import('path')
+const fs = require('fs') as typeof import('fs')
+const multer = require('multer') as typeof import('multer')
+const { db, parseTags, rebuildTags } = require('../db.ts') as {
+  db: SqliteDatabase
+  parseTags: (tags?: unknown) => string[]
+  rebuildTags: () => void
+}
+const { requireAuth, optionalAuth, signPreview, verifyPreview } = require('../auth.ts') as {
+  requireAuth: (req: Request, res: Response, next: NextFunction) => unknown
+  optionalAuth: (req: Request, res: Response, next: NextFunction) => unknown
+  signPreview: (slug: string) => string
+  verifyPreview: (token: string | undefined, slug: unknown) => boolean
+}
+const { nextId } = require('../snowflake.ts') as { nextId: () => string }
 
 const router = express.Router()
 
@@ -22,7 +76,7 @@ const router = express.Router()
 // 后台在独立子域上打开 preview-link，相对路径会落到后台自身 SPA，故必须用绝对地址
 const PUBLIC_SITE_URL = (process.env.PUBLIC_SITE_URL || '').trim().replace(/\/+$/, '')
 let warnedMissingSiteUrl = false
-function publicSiteUrl() {
+function publicSiteUrl(): string {
   if (!PUBLIC_SITE_URL && !warnedMissingSiteUrl) {
     warnedMissingSiteUrl = true
     console.warn('[blog] PUBLIC_SITE_URL 未配置，preview-link 将返回相对地址（后台点在子域上会打不开）')
@@ -82,7 +136,7 @@ const POST_JOIN =
 
 // 生成 slug：转小写、空格转短横线、过滤非法字符
 // 中文标题无法生成可用 slug 时，退回 <fallback>-<时间戳> 形式（默认 post）
-function slugify(text, fallback = 'post') {
+function slugify(text: unknown, fallback = 'post'): string {
   const slug = String(text || '')
     .toLowerCase()
     .trim()
@@ -94,30 +148,39 @@ function slugify(text, fallback = 'post') {
 
 // 副标题：独立数据字段（不同于 excerpt 摘要）。去首尾空白，上限 200 字符，超长截断
 const SUBTITLE_MAX = 200
-function normalizeSubtitle(value) {
+function normalizeSubtitle(value: unknown): string {
   return String(value || '').trim().slice(0, SUBTITLE_MAX)
 }
 
 // 校验并解析 collection_id（空/null 视为不关联合集，返回 null）
 // 返回 null 表示无合集；返回 undefined 表示参数未提供（用于区分"不改动"）
-function parseCollectionId(collectionId) {
+function parseCollectionId(collectionId: unknown): number | null | undefined {
   if (collectionId === undefined) return undefined
   if (collectionId === null || collectionId === '') return null
   const id = Number(collectionId)
   if (!Number.isInteger(id) || id <= 0) return null
-  const exists = db.prepare('SELECT id FROM collections WHERE id = ?').get(id)
+  const exists = db.prepare('SELECT id FROM collections WHERE id = ?').get(id) as
+    | { id: number }
+    | undefined
   return exists ? id : null
 }
 
 // 把数据库行整理成对外结构：published 转布尔、tags 转数组、collection 为对象或 null
-function toPost(row) {
+function toPost(row: unknown) {
   if (!row) return null
-  const { collection_id, collection_name, collection_slug, collection_public_id, ...rest } = row
+  const r = row as PostRow
+  const {
+    collection_id,
+    collection_name,
+    collection_slug,
+    collection_public_id,
+    ...rest
+  } = r
   return {
     ...rest,
-    subtitle: row.subtitle || '',
-    published: !!row.published,
-    tags: parseTags(row.tags),
+    subtitle: r.subtitle || '',
+    published: !!r.published,
+    tags: parseTags(r.tags),
     collection:
       collection_id != null
         ? {
@@ -131,17 +194,17 @@ function toPost(row) {
 }
 
 // 对 LIKE 通配符做转义，防止标签名被误当通配符
-function escapeLike(str) {
+function escapeLike(str: unknown): string {
   return String(str).replace(/[\\%_]/g, (c) => `\\${c}`)
 }
 
 // slug 退化为内部别名（URL 已改用雪花 public_id）：重名不再报 409，自动加序号后缀
-function uniqueSlug(table, base, excludeId = null) {
+function uniqueSlug(table: string, base: string, excludeId: number | null = null): string {
   const find = db.prepare(`SELECT id FROM ${table} WHERE slug = ?`)
   let candidate = base
   let n = 1
   for (;;) {
-    const row = find.get(candidate)
+    const row = find.get(candidate) as { id: number } | undefined
     if (!row || row.id === excludeId) return candidate
     n += 1
     candidate = `${base}-${n}`
@@ -152,12 +215,12 @@ function uniqueSlug(table, base, excludeId = null) {
 
 // GET /api/posts 公开文章列表：仅 published=1，支持 ?page=&tag=
 router.get('/posts', (req, res) => {
-  const page = Math.max(1, parseInt(req.query.page, 10) || 1)
+  const page = Math.max(1, parseInt(req.query.page as string, 10) || 1)
   const tag = String(req.query.tag || '').trim()
 
   // 动态拼接筛选条件
   const conditions = ['p.published = 1']
-  const params = []
+  const params: string[] = []
   if (tag) {
     // 用 "," + tags + "," 包起来做匹配，避免"前端"误匹配"前后端"
     conditions.push("(',' || p.tags || ',') LIKE ? ESCAPE '\\'")
@@ -166,9 +229,11 @@ router.get('/posts', (req, res) => {
   const where = conditions.join(' AND ')
 
   // 总数与总页数
-  const total = db
-    .prepare(`SELECT COUNT(*) AS n FROM posts p WHERE ${where}`)
-    .get(...params).n
+  const total = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM posts p WHERE ${where}`)
+      .get(...params) as { n: number }
+  ).n
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
 
@@ -194,14 +259,16 @@ router.get('/posts', (req, res) => {
 })
 
 // 解析文章：优先按雪花 public_id（现行 URL），其次按 slug（兼容历史链接）
-function findPostByKey(key) {
+function findPostByKey(key: unknown): PostRow | undefined {
   const k = String(key || '')
   if (!k) return undefined
   const byPublicId = db
     .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.public_id = ?`)
-    .get(k)
+    .get(k) as PostRow | undefined
   if (byPublicId) return byPublicId
-  return db.prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.slug = ?`).get(k)
+  return db.prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.slug = ?`).get(k) as
+    | PostRow
+    | undefined
 }
 
 // GET /api/posts/:slug 文章详情（:slug 可为雪花 public_id 或历史 slug）
@@ -210,7 +277,7 @@ function findPostByKey(key) {
 router.get('/posts/:slug', optionalAuth, (req, res) => {
   const post = findPostByKey(req.params.slug)
   const canPreview =
-    !!req.user || verifyPreview(req.query.preview, req.params.slug)
+    !!req.user || verifyPreview(req.query.preview as string | undefined, req.params.slug)
   if (!post || (!post.published && !canPreview)) {
     return res.status(404).json({ message: '文章不存在或未发布' })
   }
@@ -221,7 +288,7 @@ router.get('/posts/:slug', optionalAuth, (req, res) => {
 
 // GET /api/collections 公开合集列表：含已发布文章数
 router.get('/collections', (req, res) => {
-  const list = db
+  const list = (db
     .prepare(
       `SELECT c.id, c.name, c.slug, c.public_id, c.description, c.created_at,
               COUNT(p.id) AS post_count
@@ -230,7 +297,7 @@ router.get('/collections', (req, res) => {
        GROUP BY c.id
        ORDER BY c.created_at ASC, c.id ASC`
     )
-    .all()
+    .all() as CollectionRow[])
     .map((row) => ({ ...row, post_count: Number(row.post_count) }))
   res.json({ list })
 })
@@ -239,8 +306,12 @@ router.get('/collections', (req, res) => {
 router.get('/collections/:slug', (req, res) => {
   const key = String(req.params.slug || '')
   const collection =
-    db.prepare('SELECT * FROM collections WHERE public_id = ?').get(key) ||
-    db.prepare('SELECT * FROM collections WHERE slug = ?').get(key)
+    (db.prepare('SELECT * FROM collections WHERE public_id = ?').get(key) as
+      | CollectionRow
+      | undefined) ||
+    (db.prepare('SELECT * FROM collections WHERE slug = ?').get(key) as
+      | CollectionRow
+      | undefined)
   if (!collection) {
     return res.status(404).json({ message: '合集不存在' })
   }
@@ -277,7 +348,9 @@ router.get('/admin/posts', requireAuth, (req, res) => {
 router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
   const post = db
     .prepare('SELECT id, slug, public_id, published FROM posts WHERE id = ?')
-    .get(req.params.id)
+    .get(req.params.id) as
+    | { id: number; slug: string; public_id: string | null; published: number }
+    | undefined
   if (!post) {
     return res.status(404).json({ message: '文章不存在' })
   }
@@ -293,8 +366,16 @@ router.get('/admin/posts/:id/preview-link', requireAuth, (req, res) => {
 
 // POST /api/admin/posts 新建文章
 router.post('/admin/posts', requireAuth, (req, res) => {
-  const { title, slug, content = '', excerpt = '', subtitle = '', tags, published, collection_id } =
-    req.body || {}
+  const {
+    title,
+    slug,
+    content = '',
+    excerpt = '',
+    subtitle = '',
+    tags,
+    published,
+    collection_id,
+  } = (req.body || {}) as PostBody
 
   // 标题必填
   if (!title || !title.trim()) {
@@ -335,19 +416,20 @@ router.post('/admin/posts', requireAuth, (req, res) => {
 
   const post = db
     .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.id = ?`)
-    .get(result.lastInsertRowid)
+    .get(result.lastInsertRowid) as PostRow | undefined
   res.status(201).json(toPost(post))
 })
 
 // PUT /api/admin/posts/:id 更新文章
 router.put('/admin/posts/:id', requireAuth, (req, res) => {
   const id = Number(req.params.id)
-  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(id)
+  const post = db.prepare('SELECT * FROM posts WHERE id = ?').get(id) as PostRow | undefined
   if (!post) {
     return res.status(404).json({ message: '文章不存在' })
   }
 
-  const { title, slug, content, excerpt, subtitle, tags, published, collection_id } = req.body || {}
+  const { title, slug, content, excerpt, subtitle, tags, published, collection_id } =
+    (req.body || {}) as PostBody
   const tagList = Array.isArray(tags) ? tags : parseTags(tags ?? post.tags)
   const publishedValue =
     published === undefined ? post.published : published ? 1 : 0
@@ -356,7 +438,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
   const slugValue = uniqueSlug('posts', baseSlug, id)
 
   // collection_id：undefined 表示不改动；null/'' 表示清除；否则校验存在性
-  let collectionId = post.collection_id
+  let collectionId: number | null | undefined = post.collection_id
   if (collection_id !== undefined) {
     collectionId = parseCollectionId(collection_id)
     if (collectionId === null && collection_id !== null && collection_id !== '') {
@@ -385,7 +467,7 @@ router.put('/admin/posts/:id', requireAuth, (req, res) => {
 
   const updated = db
     .prepare(`SELECT ${POST_COLS} ${POST_JOIN} WHERE p.id = ?`)
-    .get(id)
+    .get(id) as PostRow | undefined
   res.json(toPost(updated))
 })
 
@@ -404,7 +486,7 @@ router.delete('/admin/posts/:id', requireAuth, (req, res) => {
 
 // GET /api/admin/collections 全部合集（含草稿文章数）
 router.get('/admin/collections', requireAuth, (req, res) => {
-  const list = db
+  const list = (db
     .prepare(
       `SELECT c.id, c.name, c.slug, c.public_id, c.description, c.created_at,
               COUNT(p.id) AS post_count
@@ -413,14 +495,14 @@ router.get('/admin/collections', requireAuth, (req, res) => {
        GROUP BY c.id
        ORDER BY c.created_at ASC, c.id ASC`
     )
-    .all()
+    .all() as CollectionRow[])
     .map((row) => ({ ...row, post_count: Number(row.post_count) }))
   res.json({ list })
 })
 
 // POST /api/admin/collections 新建合集
 router.post('/admin/collections', requireAuth, (req, res) => {
-  const { name, slug, description = '' } = req.body || {}
+  const { name, slug, description = '' } = (req.body || {}) as CollectionBody
 
   // 名称必填
   if (!name || !name.trim()) {
@@ -436,19 +518,21 @@ router.post('/admin/collections', requireAuth, (req, res) => {
 
   const collection = db
     .prepare('SELECT * FROM collections WHERE id = ?')
-    .get(result.lastInsertRowid)
+    .get(result.lastInsertRowid) as CollectionRow | undefined
   res.status(201).json(collection)
 })
 
 // PUT /api/admin/collections/:id 更新合集
 router.put('/admin/collections/:id', requireAuth, (req, res) => {
   const id = Number(req.params.id)
-  const collection = db.prepare('SELECT * FROM collections WHERE id = ?').get(id)
+  const collection = db.prepare('SELECT * FROM collections WHERE id = ?').get(id) as
+    | CollectionRow
+    | undefined
   if (!collection) {
     return res.status(404).json({ message: '合集不存在' })
   }
 
-  const { name, slug, description } = req.body || {}
+  const { name, slug, description } = (req.body || {}) as CollectionBody
   // slug 仅内部别名：不显式给出就保持不变
   const baseSlug =
     slug && String(slug).trim()
@@ -467,14 +551,18 @@ router.put('/admin/collections/:id', requireAuth, (req, res) => {
     id
   )
 
-  const updated = db.prepare('SELECT * FROM collections WHERE id = ?').get(id)
+  const updated = db.prepare('SELECT * FROM collections WHERE id = ?').get(id) as
+    | CollectionRow
+    | undefined
   res.json(updated)
 })
 
 // DELETE /api/admin/collections/:id 删除合集（文章 collection_id 置 NULL）
 router.delete('/admin/collections/:id', requireAuth, (req, res) => {
   const id = Number(req.params.id)
-  const collection = db.prepare('SELECT id FROM collections WHERE id = ?').get(id)
+  const collection = db.prepare('SELECT id FROM collections WHERE id = ?').get(id) as
+    | { id: number }
+    | undefined
   if (!collection) {
     return res.status(404).json({ message: '合集不存在' })
   }
