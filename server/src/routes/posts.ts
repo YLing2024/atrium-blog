@@ -87,6 +87,17 @@ function publicSiteUrl(): string {
 // ---- 博客图片上传（管理接口）：存 uploads/，公开访问 /api/blog/uploads/<name> ----
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads')
 fs.mkdirSync(UPLOAD_DIR, { recursive: true })
+// 允许上传的图片类型（同时作为回源 Content-Type 白名单）：按扩展名收敛，杜绝 html/js 等被同源渲染
+const UPLOAD_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.svg': 'image/svg+xml'
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOAD_DIR),
@@ -95,11 +106,30 @@ const upload = multer({
       cb(null, `${Date.now()}-${Math.round(Math.random() * 1e6)}${ext}`)
     }
   }),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase()
+    if (!UPLOAD_TYPES[ext]) {
+      cb(new Error(`不支持的文件类型${ext ? ` ${ext}` : ''}，仅限 ${Object.keys(UPLOAD_TYPES).join(' / ')}`))
+      return
+    }
+    cb(null, true)
+  }
 })
 
+// 包一层：把 multer 的报错转成 400 JSON（否则会落到 Express 默认错误处理）
+function uploadImage(req: Request, res: Response, next: NextFunction) {
+  upload.single('image')(req, res, (err: unknown) => {
+    if (err) {
+      res.status(400).json({ message: err instanceof Error ? err.message : '上传失败' })
+      return
+    }
+    next()
+  })
+}
+
 // POST /api/blog/admin/upload（需鉴权）：返回 { url: '/api/blog/uploads/<name>' }
-router.post('/admin/upload', requireAuth, upload.single('image'), (req, res) => {
+router.post('/admin/upload', requireAuth, uploadImage, (req, res) => {
   if (!req.file) return res.status(400).json({ message: '未收到图片（字段名 image）' })
   res.json({ url: `/api/blog/uploads/${req.file.filename}` })
 })
@@ -108,8 +138,14 @@ router.post('/admin/upload', requireAuth, upload.single('image'), (req, res) => 
 router.get('/uploads/:name', (req, res) => {
   const name = path.basename(req.params.name || '')
   if (!name || name.includes('..')) return res.status(400).json({ message: '非法文件名' })
+  const type = UPLOAD_TYPES[path.extname(name).toLowerCase()]
+  if (!type) return res.status(404).json({ message: '图片不存在' })
   const file = path.join(UPLOAD_DIR, name)
   if (!fs.existsSync(file)) return res.status(404).json({ message: '图片不存在' })
+  // 显式声明类型 + 禁止嗅探：即便目录里混入别的东西，也不会被当作 HTML/脚本渲染
+  res.setHeader('Content-Type', type)
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
   res.sendFile(file)
 })
 

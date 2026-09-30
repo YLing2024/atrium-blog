@@ -10,8 +10,9 @@
 // 雪花模块带模块级可变状态（lastMs / seq），且 node:test 不保证顶层用例的执行顺序，
 // 因此每个用例前用 fresh() 清掉 require 缓存重取一份全新实例，做到用例互不影响。
 
-const { test } = require('node:test') as typeof import('node:test')
-const assert = require('node:assert/strict') as typeof import('node:assert/strict')
+// 显式类型标注（不是 `as` 断言）：assert 是 TS 的断言函数，用 `as` 会让 tsc 报 TS2775
+const { test }: typeof import('node:test') = require('node:test')
+const assert: typeof import('node:assert/strict') = require('node:assert/strict')
 
 type Snowflake = {
   nextId: () => string
