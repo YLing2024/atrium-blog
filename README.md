@@ -1,3 +1,5 @@
+[简体中文](README.md) ｜ [English](README.en.md)
+
 # atrium-blog
 
 个人博客的后端 API：给自建博客前台与后台提供文章、合集与图片接口。
@@ -22,8 +24,8 @@
 ```bash
 cd server
 npm install
-npm run dev     # node --watch src/index.js
-npm start       # node src/index.js
+npm run dev     # node --watch src/index.ts
+npm start       # node src/index.ts
 ```
 
 首次启动会自动建库建表并写入示例文章，同时打印一行初始管理员账号口令，**只打印一次**，请立即保存。
@@ -78,7 +80,7 @@ npm start       # node src/index.js
 ## 部署
 
 - systemd 单元：`blog-server.service`。
-- 服务只监听 `127.0.0.1:4000`，由 nginx 反代对外；无构建产物，直接运行 `src/index.js`。
+- 服务只监听 `127.0.0.1:4000`，由 nginx 反代对外；无构建产物，直接运行 `src/index.ts`。
 - nginx 层：`/api/blog/*` 公开读放行；`/api/blog/admin/*` 交给认证网关。
 - 经认证网关部署时须显式设置 `AUTH_MODE=sso`，否则网关注入的 `X-Auth-User` 会被 `builtin` 忽略，管理接口不可用。
 
